@@ -8,42 +8,112 @@ const statusDot = document.getElementById("status-dot");
 const statusDotInline = document.getElementById("status-dot-inline");
 const statusTitle = document.getElementById("status-title");
 const statusDetail = document.getElementById("status-detail");
-const BRIDGE_REFERENCE = `TabWorks Bridge 本地 bridge 接口参考
-
-本地服务地址:
-- http://127.0.0.1:9527
-
-重要说明:
-- CLI 不是使用前提；浏览器扩展无法判断系统里是否安装了 CLI。
-- 扩展只能检测 localhost:9527 的 bridge/log 服务是否在线。
-- 除 GET /status 外，接口需要本地服务在线、扩展已连接，并携带请求头 X-TabWorks-Bridge: 1。
-
-接口总览:
-- 服务状态: GET /status，检查本地服务和扩展连接状态。依赖: 无。
-- 页面导航: POST /open，创建自动化窗口、打开 URL、跳转、选择或关闭标签页。依赖: 扩展可用。
-- 读取 DOM: POST /inspect，获取标题、URL、正文摘要和链接列表。依赖: 页面已加载。
-- 执行脚本: POST /run-js，在目标页面上下文运行 JavaScript，读取 DOM 或调用页面函数。依赖: 页面已打开。
-- 点击元素: POST /tap，点击指定 selector；mode: "mouse" 会走 CDP 鼠标事件，适合 antd Select 这类依赖 mousedown/focus 的组件。依赖: 页面已打开。
-- 输入文本: POST /input，兼容普通 input/textarea/select/contenteditable；对 React/antd 受控输入会优先走原生 setter 并触发 input/change。依赖: 页面已打开。
-- 请求接口: POST /request，在页面上下文发起 fetch，可携带当前页面登录态，例如请求 /api/animals。依赖: 页面权限。
-- 页面截图: POST /capture，截取当前视口或整页截图，可返回图片内容或保存到文件。依赖: debugger 权限。
-- 读取 Cookie: POST /cookies，按 URL 或域名读取 cookie。依赖: cookies 权限。
-- 会话状态: POST /sessions，查看自动化窗口和标签页状态。依赖: 本地服务。
-
-请求示例:
-fetch("http://127.0.0.1:9527/request", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-TabWorks-Bridge": "1"
+const API_REFERENCE = [
+  {
+    code: "SYS",
+    capability: "服务状态",
+    method: "GET",
+    endpoint: "/status",
+    purpose: "检查本地服务和扩展连接状态。",
+    dependency: "无",
   },
-  body: JSON.stringify({
-    pageId: 123,
-    url: "/api/animals",
-    method: "GET"
-  })
-})
-`;
+  {
+    code: "NAV",
+    capability: "页面导航",
+    method: "POST",
+    endpoint: "/open",
+    purpose: "创建自动化窗口、打开 URL、跳转、选择或关闭标签页。",
+    dependency: "扩展可用",
+  },
+  {
+    code: "DOM",
+    capability: "读取 DOM",
+    method: "POST",
+    endpoint: "/inspect",
+    purpose: "获取标题、URL、正文摘要和链接列表。",
+    dependency: "页面已加载",
+  },
+  {
+    code: "JS",
+    capability: "执行脚本",
+    method: "POST",
+    endpoint: "/run-js",
+    purpose: "在目标页面上下文运行 JavaScript，读取 DOM 或调用页面函数。",
+    dependency: "页面已打开",
+  },
+  {
+    code: "TAP",
+    capability: "点击元素",
+    method: "POST",
+    endpoint: "/tap",
+    purpose: '点击指定 selector；mode: "mouse" 会走 CDP 鼠标事件，适合 antd Select。',
+    dependency: "页面已打开",
+  },
+  {
+    code: "INP",
+    capability: "输入文本",
+    method: "POST",
+    endpoint: "/input",
+    purpose: "兼容普通 input/textarea/select/contenteditable；对 React/antd 受控输入会优先走原生 setter 并触发 input/change。",
+    dependency: "页面已打开",
+  },
+  {
+    code: "API",
+    capability: "请求接口",
+    method: "POST",
+    endpoint: "/request",
+    purpose: "在页面上下文发起 fetch，可携带当前页面登录态，例如请求 /api/animals。",
+    dependency: "页面权限",
+  },
+  {
+    code: "IMG",
+    capability: "页面截图",
+    method: "POST",
+    endpoint: "/capture",
+    purpose: "截取当前视口或整页截图，可返回图片内容或保存到文件。",
+    dependency: "debugger 权限",
+  },
+  {
+    code: "CK",
+    capability: "读取 Cookie",
+    method: "POST",
+    endpoint: "/cookies",
+    purpose: "按 URL 或域名读取 cookie。",
+    dependency: "cookies 权限",
+  },
+  {
+    code: "RUN",
+    capability: "会话状态",
+    method: "POST",
+    endpoint: "/sessions",
+    purpose: "查看自动化窗口和标签页状态。",
+    dependency: "本地服务",
+  },
+  {
+    code: "REC",
+    capability: "开始 UI 录制",
+    method: "POST",
+    endpoint: "/recording/start",
+    purpose: "开始记录当前或指定标签页中的 click/input/change/submit/scroll/navigation 事件。",
+    dependency: "扩展内容脚本已注入",
+  },
+  {
+    code: "REC",
+    capability: "停止 UI 录制",
+    method: "POST",
+    endpoint: "/recording/stop",
+    purpose: "停止录制并写入 .bridge/ui-record/<sessionId>/session.json。",
+    dependency: "已有录制 session",
+  },
+  {
+    code: "REC",
+    capability: "录制状态",
+    method: "POST",
+    endpoint: "/recording/status",
+    purpose: "查看正在进行的 UI 录制 session。",
+    dependency: "本地服务",
+  },
+];
 
 async function copyWithFeedback(btn, text) {
   const originalText = btn.textContent;
@@ -82,6 +152,9 @@ function sampleBodyForEndpoint(endpoint) {
     return { pageId: 123, format: "png", fullPage: false };
   if (endpoint === "/cookies") return { url: "https://example.com" };
   if (endpoint === "/sessions") return {};
+  if (endpoint === "/recording/start") return { tabId: 123 };
+  if (endpoint === "/recording/stop") return { sessionId: "ui_1234567890_demo" };
+  if (endpoint === "/recording/status") return {};
   return { pageId: 123 };
 }
 
@@ -99,6 +172,35 @@ function fetchSnippet(method, endpoint) {
   },
   body: JSON.stringify(${JSON.stringify(sampleBodyForEndpoint(endpoint), null, 2).replace(/\n/g, "\n  ")})
 })`;
+}
+
+function buildBridgeReference() {
+  const summary = API_REFERENCE.map(
+    (item) =>
+      `- ${item.capability}: ${item.method} ${item.endpoint}\n  用途：${item.purpose}\n  依赖：${item.dependency}`,
+  ).join("\n");
+  const examples = API_REFERENCE.map(
+    (item) => `## ${item.capability} (${item.method} ${item.endpoint})\n${fetchSnippet(item.method, item.endpoint)}`,
+  ).join("\n\n");
+
+  return `TabWorks Bridge 本地 bridge 接口参考
+
+本地服务地址:
+- http://127.0.0.1:9527
+
+重要说明:
+- CLI 不是使用前提；浏览器扩展无法判断系统里是否安装了 CLI。
+- 扩展只能检测 localhost:9527 的 bridge/log 服务是否在线。
+- 除 GET /status 外，接口需要本地服务在线、扩展已连接，并携带请求头 X-TabWorks-Bridge: 1。
+- UI 录制产物写入 .bridge/ui-record/<sessionId>/session.json；该目录默认不会提交到 git。
+- 导出的流程脚本可以使用 await page.sleep(ms) 表达点击后的加载、动画或接口等待。
+
+接口总览:
+${summary}
+
+fetch 示例:
+${examples}
+`;
 }
 
 function buildApiRowCopy(btn) {
@@ -143,7 +245,7 @@ extensionSettingsBtn.addEventListener("click", () => {
 });
 
 copyReferenceBtn.addEventListener("click", () =>
-  copyWithFeedback(copyReferenceBtn, BRIDGE_REFERENCE),
+  copyWithFeedback(copyReferenceBtn, buildBridgeReference()),
 );
 
 async function checkStatus() {
