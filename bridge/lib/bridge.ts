@@ -253,6 +253,15 @@ export class BridgePage implements Page {
     await call("/move", { pageId: this.pageId, direction, distance });
   }
 
+  async sleep(ms: number): Promise<void> {
+    if (!Number.isFinite(ms) || ms < 0) {
+      throw new Error("sleep 毫秒数必须是非负有限数");
+    }
+    const durationMs = Math.floor(ms);
+    if (this._log) this._log.debug({ durationMs }, "sleep");
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+  }
+
   async screenshot({
     format = "png",
     fullPage = false,

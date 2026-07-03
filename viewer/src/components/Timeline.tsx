@@ -23,6 +23,7 @@ export function Timeline({ steps, startTime }: Props) {
 				if (s.kind === "tap") return <TapItem key={s.seq} s={s} />;
 				if (s.kind === "input") return <InputItem key={s.seq} s={s} />;
 				if (s.kind === "scroll") return <ScrollItem key={s.seq} s={s} />;
+				if (s.kind === "sleep") return <SleepItem key={s.seq} s={s} />;
 				if (s.kind === "screenshot")
 					return <ScreenshotItem key={s.seq} s={s} />;
 				if (s.kind === "error") return <ErrorItem key={s.seq} s={s} />;
@@ -472,6 +473,24 @@ function ScrollItem({ s }: { s: Extract<Step, { kind: "scroll" }> }) {
 				{s.distance > 0 && (
 					<span className="text-muted ml-1">{s.distance}px</span>
 				)}
+			</span>
+		</div>
+	);
+}
+
+// ─── sleep 等待步骤 ──────────────────────────────────────────────────
+
+function SleepItem({ s }: { s: Extract<Step, { kind: "sleep" }> }) {
+	return (
+		<div className="bg-surface border border-border rounded-md px-2.5 py-1.5 flex items-center gap-2">
+			<span className="text-[9px] font-bold text-muted w-7 shrink-0 uppercase">
+				SLP
+			</span>
+			<span className="text-[11px] text-[#e0e0e0] flex-1">
+				等待页面异步更新
+			</span>
+			<span className="text-[11px] shrink-0 tabular-nums text-muted">
+				{s.durationMs}ms
 			</span>
 		</div>
 	);

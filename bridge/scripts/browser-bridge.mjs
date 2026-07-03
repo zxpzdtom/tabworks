@@ -330,6 +330,16 @@ function aggregateLogs(entries) {
         continue;
       }
 
+      if (row.msg === "sleep") {
+        steps.push({
+          kind: "sleep",
+          seq: ++seq,
+          time: row.time,
+          durationMs: row.durationMs ?? 0,
+        });
+        continue;
+      }
+
       if (row.msg === "screenshot →") {
         const screenshotEnd = rows.find(
           (entry) => entry.msg === "screenshot ✓" && entry.time >= row.time,
