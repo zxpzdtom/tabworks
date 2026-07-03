@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>TabWorks Bridge 接口参考</title>
+        <style>
+            :root {
+                color-scheme: light;
+                --bg: #f5f6f8;
+                --panel: #ffffff;
+                --panel-soft: #f9fafc;
+                --ink: #151922;
+                --muted: #667085;
+                --soft: #98a2b3;
+                --line: #e2e6ee;
+                --line-strong: #cfd6e2;
+                --blue: #2563eb;
+                --blue-ink: #1746a2;
+                --blue-soft: #eaf1ff;
+                --green: #12805c;
+                --green-soft: #e7f6ef;
+                --amber: #b7791f;
+                --amber-soft: #fff5df;
+                --red: #c2413a;
+                --code-bg: #111827;
+                --shadow:
+                    0 0 0 1px rgba(15, 23, 42, 0.08),
+                    0 10px 24px rgba(15, 23, 42, 0.08);
+                --control-shadow:
+                    0 0 0 1px rgba(15, 23, 42, 0.08),
+                    0 1px 2px rgba(15, 23, 42, 0.06);
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            html {
+                min-width: 320px;
+                scroll-behavior: smooth;
+                -webkit-font-smoothing: antialiased;
+                -moz-osx-font-smoothing: grayscale;
+            }
+
+            body {
+                margin: 0;
+                color: var(--ink);
+                background:
+                    linear-gradient(180deg, #fbfcfe 0, var(--bg) 360px),
+                    var(--bg);
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "PingFang SC",
+                    "Helvetica Neue", Arial, sans-serif;
+                font-size: 14px;
+            }
+
+            button {
+                font: inherit;
+            }
+
+            a {
+                color: inherit;
+                text-decoration: none;
+            }
+
+            code,
+            .mono {
+                font-family: "SF Mono", Menlo, Consolas, monospace;
+                font-variant-numeric: tabular-nums;
+            }
+
+            .page {
+                width: min(1180px, calc(100% - 40px));
+                margin: 0 auto;
+                padding: 26px 0 54px;
+            }
+
+            .app-shell {
+                display: grid;
+                grid-template-columns: 220px minmax(0, 1fr);
+                gap: 20px;
+                align-items: start;
+            }
+
+            .sidebar {
+                position: sticky;
+                top: 18px;
+                display: grid;
+                gap: 14px;
+            }
+
+            .side-card {
+                border-radius: 14px;
+                background: var(--panel);
+                box-shadow: var(--shadow);
+                overflow: hidden;
+            }
+
+            .side-brand {
+                padding: 16px 16px 13px;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .eyebrow {
+                margin: 0 0 6px;
+                color: var(--blue);
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+
+            .side-brand h1 {
+                margin: 0;
+                font-size: 22px;
+                line-height: 1.08;
+                letter-spacing: 0;
+                text-wrap: balance;
+            }
+
+            .side-brand p {
+                margin: 9px 0 0;
+                color: var(--muted);
+                font-size: 12px;
+                line-height: 1.5;
+                text-wrap: pretty;
+            }
+
+            .nav {
+                display: grid;
+                padding: 8px;
+            }
+
+            .nav a {
+                min-height: 38px;
+                display: flex;
+                align-items: center;
+                gap: 9px;
+                padding: 0 10px;
+                border-radius: 9px;
+                color: #384152;
+                transition-property: background-color, color, transform;
+                transition-duration: 150ms;
+                transition-timing-function: ease-out;
+            }
+
+            .nav a:hover {
+                color: var(--blue-ink);
+                background: var(--blue-soft);
+            }
+
+            .nav a:active {
+                transform: scale(0.98);
+            }
+
+            .nav-code {
+                width: 34px;
+                min-height: 22px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 7px;
+                color: var(--blue-ink);
+                background: var(--blue-soft);
+                font-size: 10px;
+                font-weight: 800;
+            }
+
+            .side-actions {
+                display: grid;
+                gap: 8px;
+                padding: 12px;
+            }
+
+            .content {
+                display: grid;
+                gap: 16px;
+                min-width: 0;
+            }
+
+            .top-strip {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 14px;
+                align-items: start;
+                padding: 18px 20px;
+                border-radius: 16px;
+                background: var(--panel);
+                box-shadow: var(--shadow);
+            }
+
+            .top-strip h2 {
+                margin: 0;
+                font-size: 28px;
+                line-height: 1.12;
+                letter-spacing: 0;
+                text-wrap: balance;
+            }
+
+            .top-strip p {
+                max-width: 760px;
+                margin: 9px 0 0;
+                color: var(--muted);
+                line-height: 1.65;
+                text-wrap: pretty;
+            }
+
+            .status-pill {
+                min-height: 36px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                padding: 0 12px;
+                border-radius: 999px;
+                color: #394153;
+                background: var(--panel-soft);
+                box-shadow: var(--control-shadow);
+                white-space: nowrap;
+            }
+
+            .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--amber);
+            }
+
+            .dot.online {
+                background: var(--green);
+            }
+
+            .btn {
+                min-height: 38px;
+                border: 0;
+                border-radius: 10px;
+                padding: 0 12px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                color: var(--ink);
+                background: #eef2f7;
+                box-shadow: var(--control-shadow);
+                cursor: pointer;
+                transition-property: background-color, box-shadow, color, transform, opacity;
+                transition-duration: 150ms;
+                transition-timing-function: ease-out;
+            }
+
+            .btn:hover {
+                background: #e7edf5;
+                box-shadow:
+                    0 0 0 1px rgba(15, 23, 42, 0.1),
+                    0 2px 6px rgba(15, 23, 42, 0.1);
+            }
+
+            .btn:active {
+                transform: scale(0.97);
+            }
+
+            .btn.primary {
+                color: #fff;
+                background: var(--blue);
+            }
+
+            .btn.primary:hover {
+                background: #1d56d8;
+            }
+
+            .btn.small {
+                min-height: 30px;
+                border-radius: 8px;
+                padding: 0 10px;
+                font-size: 12px;
+            }
+
+            .btn:disabled {
+                cursor: default;
+                opacity: 0.56;
+                transform: none;
+            }
+
+            .panel {
+                border-radius: 16px;
+                background: var(--panel);
+                box-shadow: var(--shadow);
+                overflow: hidden;
+                scroll-margin-top: 18px;
+            }
+
+            .panel-header {
+                display: grid;
+                gap: 7px;
+                padding: 18px 20px 14px;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .panel-header h2 {
+                margin: 0;
+                font-size: 18px;
+                line-height: 1.25;
+                letter-spacing: 0;
+            }
+
+            .panel-header p {
+                max-width: 780px;
+                margin: 0;
+                color: var(--muted);
+                line-height: 1.6;
+                text-wrap: pretty;
+            }
+
+            .matrix {
+                display: grid;
+                border-top: 0;
+            }
+
+            .matrix-row {
+                display: grid;
+                grid-template-columns: 156px minmax(130px, 0.7fr) minmax(0, 1.3fr) 116px;
+                gap: 14px;
+                align-items: center;
+                min-height: 58px;
+                padding: 11px 20px;
+                border-top: 1px solid var(--line);
+            }
+
+            .matrix-row:first-child {
+                border-top: 0;
+            }
+
+            .matrix-row.header {
+                min-height: 42px;
+                color: #525d6d;
+                background: var(--panel-soft);
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.07em;
+                text-transform: uppercase;
+            }
+
+            .cap-title {
+                min-width: 0;
+                display: grid;
+                grid-template-columns: 42px minmax(0, 1fr);
+                gap: 10px;
+                align-items: center;
+            }
+
+            .cap-code {
+                min-height: 26px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 8px;
+                color: var(--blue-ink);
+                background: var(--blue-soft);
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: 0;
+            }
+
+            .cap-title strong {
+                display: block;
+                font-size: 14px;
+                line-height: 1.25;
+            }
+
+            .cap-title span:not(.cap-code),
+            .muted {
+                color: var(--muted);
+                line-height: 1.5;
+                text-wrap: pretty;
+            }
+
+            .endpoint {
+                min-width: 0;
+                color: #344054;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .tag {
+                min-height: 28px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0 9px;
+                border-radius: 8px;
+                color: #344054;
+                background: var(--panel-soft);
+                box-shadow: var(--control-shadow);
+                font-size: 12px;
+                white-space: nowrap;
+            }
+
+            .api-table {
+                display: grid;
+            }
+
+            .api-row {
+                display: grid;
+                grid-template-columns:
+                    150px 76px minmax(124px, 0.75fr) minmax(0, 1.25fr)
+                    112px auto;
+                gap: 12px;
+                align-items: center;
+                min-height: 52px;
+                padding: 10px 20px;
+                border-top: 1px solid var(--line);
+            }
+
+            .api-row:first-child {
+                border-top: 0;
+            }
+
+            .api-row.header {
+                min-height: 42px;
+                color: #525d6d;
+                background: var(--panel-soft);
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.07em;
+                text-transform: uppercase;
+            }
+
+            .method {
+                min-height: 28px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 8px;
+                color: var(--blue-ink);
+                background: var(--blue-soft);
+                font-size: 11px;
+                font-weight: 800;
+            }
+
+            .runtime-grid {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(280px, 0.62fr);
+                gap: 16px;
+            }
+
+            .runtime-card {
+                padding: 16px 18px;
+            }
+
+            .runtime-line {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+            }
+
+            .runtime-label {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 800;
+            }
+
+            .runtime-card p {
+                margin: 10px 0 0;
+                color: var(--muted);
+                line-height: 1.6;
+                text-wrap: pretty;
+            }
+
+            .notice {
+                margin: 0;
+                padding: 13px 14px;
+                border-radius: 12px;
+                color: #6b4600;
+                background: var(--amber-soft);
+                line-height: 1.6;
+                text-wrap: pretty;
+            }
+
+            .info-list {
+                display: grid;
+                gap: 8px;
+                padding: 16px 18px;
+            }
+
+            .info-row {
+                display: grid;
+                grid-template-columns: 142px minmax(0, 1fr);
+                gap: 12px;
+                align-items: start;
+                padding: 10px 12px;
+                border-radius: 10px;
+                background: var(--panel-soft);
+            }
+
+            .code-card {
+                margin: 0;
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 12px;
+                align-items: start;
+                padding: 14px;
+                background: var(--code-bg);
+                color: #edf2ff;
+                overflow: hidden;
+            }
+
+            .code-card pre {
+                min-width: 0;
+                margin: 0;
+                overflow: auto;
+                line-height: 1.65;
+            }
+
+            .code-card code {
+                color: inherit;
+                white-space: pre;
+                font-size: 12px;
+            }
+
+            .copy.copied,
+            .btn.copied {
+                color: var(--green);
+                background: var(--green-soft);
+            }
+
+            @media (max-width: 900px) {
+                .page {
+                    width: min(100% - 24px, 720px);
+                    padding-top: 18px;
+                }
+
+                .app-shell,
+                .top-strip,
+                .runtime-grid {
+                    grid-template-columns: 1fr;
+                }
+
+                .sidebar {
+                    position: static;
+                }
+
+                .nav {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+
+                .side-actions {
+                    grid-template-columns: 1fr 1fr;
+                }
+
+                .matrix-row {
+                    grid-template-columns: 1fr;
+                    gap: 7px;
+                    align-items: start;
+                }
+
+                .matrix-row.header {
+                    display: none;
+                }
+
+                .api-row.header {
+                    display: none;
+                }
+
+                .api-row,
+                .info-row {
+                    grid-template-columns: 1fr;
+                    gap: 7px;
+                    align-items: start;
+                }
+
+                .api-row .btn {
+                    justify-self: start;
+                }
+            }
+
+            @media (max-width: 520px) {
+                .page {
+                    width: calc(100% - 16px);
+                }
+
+                .top-strip {
+                    padding: 16px;
+                }
+
+                .top-strip h2 {
+                    font-size: 24px;
+                }
+
+                .code-card {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="page">
+            <div class="app-shell">
+                <aside class="sidebar" aria-label="页面索引">
+                    <section class="side-card">
+                        <div class="side-brand">
+                            <p class="eyebrow">TabWorks Bridge</p>
+                            <h1>接口参考</h1>
+                            <p>
+                                本地 bridge 暴露的接口总览，以及每个接口对应的浏览器能力。
+                            </p>
+                        </div>
+                        <nav class="nav" aria-label="页面导航">
+                            <a href="#interfaces">
+                                <span class="nav-code mono">API</span>
+                                <span>接口总览</span>
+                            </a>
+                            <a href="#examples">
+                                <span class="nav-code mono">REQ</span>
+                                <span>调用示例</span>
+                            </a>
+                            <a href="#runtime">
+                                <span class="nav-code mono">RUN</span>
+                                <span>运行状态</span>
+                            </a>
+                        </nav>
+                        <div class="side-actions">
+                            <button class="btn primary" id="copy-reference">
+                                复制给 AI
+                            </button>
+                            <button class="btn" id="open-logs">
+                                打开日志
+                            </button>
+                            <button class="btn" id="open-extension-settings">
+                                扩展管理
+                            </button>
+                        </div>
+                    </section>
+                </aside>
+
+                <div class="content">
+                    <section class="top-strip">
+                        <div>
+                            <h2>本地 bridge 接口总览</h2>
+                            <p>
+                                每一行都把浏览器能力、调用路径和运行依赖放在一起。CLI 不是使用前提；popup 只显示连接状态和入口。
+                            </p>
+                        </div>
+                        <div class="status-pill" aria-live="polite">
+                            <span class="dot" id="status-dot"></span>
+                            <span id="status-title">正在检查本地服务</span>
+                        </div>
+                    </section>
+
+                    <section class="panel" id="interfaces">
+                        <div class="panel-header">
+                            <h2>本地 bridge 接口总览</h2>
+                            <p>
+                                除 <code>GET /status</code> 外，接口需要本地服务在线、扩展已连接，并携带
+                                <code>X-TabWorks-Bridge: 1</code> 请求头。
+                            </p>
+                        </div>
+                        <div class="api-table" role="table" aria-label="本地 bridge 接口总览">
+                            <div class="api-row header" role="row">
+                                <span>能力</span>
+                                <span>方法</span>
+                                <span>接口</span>
+                                <span>用途</span>
+                                <span>依赖</span>
+                                <span>操作</span>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">SYS</span>
+                                    <strong>服务状态</strong>
+                                </div>
+                                <span class="method mono">GET</span>
+                                <code class="endpoint">/status</code>
+                                <span class="muted">检查本地服务和扩展连接状态。</span>
+                                <span class="tag">无</span>
+                                <button class="btn small copy" data-copy="GET /status">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">NAV</span>
+                                    <strong>页面导航</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/open</code>
+                                <span class="muted">创建自动化窗口、打开 URL、跳转、选择或关闭标签页。</span>
+                                <span class="tag">扩展可用</span>
+                                <button class="btn small copy" data-copy="POST /open">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">DOM</span>
+                                    <strong>读取 DOM</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/inspect</code>
+                                <span class="muted">读取页面标题、文本和链接摘要。</span>
+                                <span class="tag">页面已加载</span>
+                                <button class="btn small copy" data-copy="POST /inspect">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">JS</span>
+                                    <strong>执行脚本</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/run-js</code>
+                                <span class="muted">在目标页面上下文运行 JavaScript，读取 DOM 或调用页面函数。</span>
+                                <span class="tag">页面已打开</span>
+                                <button class="btn small copy" data-copy="POST /run-js">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">TAP</span>
+                                    <strong>点击元素</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/tap</code>
+                                <span class="muted">点击指定 selector；<code>mode: "mouse"</code> 会走 CDP 鼠标事件，适合 antd Select。</span>
+                                <span class="tag">页面已打开</span>
+                                <button class="btn small copy" data-copy="POST /tap">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">INP</span>
+                                    <strong>输入文本</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/input</code>
+                                <span class="muted">兼容 input、textarea、select 和 contenteditable；受控组件会触发 input/change。</span>
+                                <span class="tag">页面已打开</span>
+                                <button class="btn small copy" data-copy="POST /input">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">API</span>
+                                    <strong>请求接口</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/request</code>
+                                <span class="muted">在页面上下文发起 fetch，例如请求 <code>/api/animals</code> 并携带当前登录态。</span>
+                                <span class="tag">页面权限</span>
+                                <button class="btn small copy" data-copy="POST /request">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">IMG</span>
+                                    <strong>页面截图</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/capture</code>
+                                <span class="muted">截取当前视口或整页截图，可返回图片内容或保存到文件。</span>
+                                <span class="tag">debugger 权限</span>
+                                <button class="btn small copy" data-copy="POST /capture">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">CK</span>
+                                    <strong>读取 Cookie</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/cookies</code>
+                                <span class="muted">按 URL 或域名读取 cookie。</span>
+                                <span class="tag">cookies 权限</span>
+                                <button class="btn small copy" data-copy="POST /cookies">
+                                    复制
+                                </button>
+                            </div>
+                            <div class="api-row" role="row">
+                                <div class="cap-title">
+                                    <span class="cap-code mono">RUN</span>
+                                    <strong>会话状态</strong>
+                                </div>
+                                <span class="method mono">POST</span>
+                                <code class="endpoint">/sessions</code>
+                                <span class="muted">查看自动化窗口和标签页状态。</span>
+                                <span class="tag">本地服务</span>
+                                <button class="btn small copy" data-copy="POST /sessions">
+                                    复制
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="panel" id="examples">
+                        <div class="panel-header">
+                            <h2>调用示例</h2>
+                            <p>
+                                下面是直接调用本地 bridge 的形态，和是否安装 CLI 无关。
+                            </p>
+                        </div>
+                        <figure class="code-card">
+                            <pre><code>fetch("http://127.0.0.1:9527/request", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-TabWorks-Bridge": "1"
+  },
+  body: JSON.stringify({
+    pageId: 123,
+    url: "/api/animals",
+    method: "GET"
+  })
+})</code></pre>
+                            <button
+                                class="btn small copy"
+                                data-copy='fetch("http://127.0.0.1:9527/request", { method: "POST", headers: { "Content-Type": "application/json", "X-TabWorks-Bridge": "1" }, body: JSON.stringify({ pageId: 123, url: "/api/animals", method: "GET" }) })'
+                            >
+                                复制
+                            </button>
+                        </figure>
+                    </section>
+
+                    <section class="runtime-grid" id="runtime">
+                        <section class="panel runtime-card">
+                            <div class="runtime-line">
+                                <div class="runtime-label">
+                                    <span class="dot" id="status-dot-inline"></span>
+                                    <span>本地服务</span>
+                                </div>
+                                <code>localhost:9527</code>
+                            </div>
+                            <p id="status-detail">
+                                日志和接口页面只有在本地 bridge 服务启动后才可用。
+                            </p>
+                            <p class="notice">
+                                浏览器扩展无法直接判断系统里是否安装了 CLI，只能检测
+                                <code>localhost:9527</code> 的 bridge/log 服务是否在线。
+                            </p>
+                        </section>
+
+                        <section class="panel">
+                            <div class="panel-header">
+                                <h2>权限对应能力</h2>
+                                <p>权限只解释扩展能做什么，不代表 CLI 已安装。</p>
+                            </div>
+                            <div class="info-list">
+                                <div class="info-row">
+                                    <strong class="mono">debugger / tabs</strong>
+                                    <span class="muted">
+                                        CDP 命令、自动化窗口、导航、截图。
+                                    </span>
+                                </div>
+                                <div class="info-row">
+                                    <strong class="mono">cookies</strong>
+                                    <span class="muted">
+                                        读取用户指定范围内的登录态 cookie。
+                                    </span>
+                                </div>
+                                <div class="info-row">
+                                    <strong class="mono">storage / alarms</strong>
+                                    <span class="muted">
+                                        保存 popup 设置并维持 MV3 后台连接。
+                                    </span>
+                                </div>
+                            </div>
+                        </section>
+                    </section>
+                </div>
+            </div>
+        </main>
+
+        <script src="guide.js"></script>
+    </body>
+</html>

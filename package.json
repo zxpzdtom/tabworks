@@ -1,0 +1,30 @@
+{
+  "name": "tabworks",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TabWorks Bridge CLI，管理本地浏览器桥接服务、日志面板和可复用自动化 routine",
+  "bin": {
+    "tabworks": "cli/main.ts",
+    "tw": "cli/main.ts"
+  },
+  "scripts": {
+    "serve": "bun cli/main.ts serve",
+    "dev": "bun cli/main.ts serve",
+    "daemon:start": "bun cli/main.ts daemon start",
+    "daemon:status": "bun cli/main.ts daemon status",
+    "daemon:stop": "bun cli/main.ts daemon stop",
+    "list": "bun cli/main.ts list",
+    "bridge:status": "bun cli/main.ts bridge status",
+    "bridge:stop": "bun cli/main.ts bridge stop",
+    "test": "cd bridge && bun test --ignore-pattern '**/*.integration.test.ts' sites"
+  },
+  "dependencies": {
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.12",
+    "bun-types": "^1.3.12",
+    "typescript": "^6.0.2"
+  }
+}

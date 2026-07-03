@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "TabWorks Bridge",
+  "version": "1.0.0",
+  "description": "Connect local automation tools to your signed-in Chrome session through a private localhost bridge.",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "cookies",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "TabWorks Bridge",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

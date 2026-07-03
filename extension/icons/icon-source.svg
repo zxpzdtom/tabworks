@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="TabWorks Bridge icon">
+  <defs>
+    <linearGradient id="background" x1="160" y1="96" x2="872" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2F6BFF"/>
+      <stop offset="0.52" stop-color="#0DB8D5"/>
+      <stop offset="1" stop-color="#12A36A"/>
+    </linearGradient>
+    <linearGradient id="surface" x1="300" y1="236" x2="760" y2="792" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAF4FF"/>
+    </linearGradient>
+    <linearGradient id="cut" x1="336" y1="320" x2="724" y2="730" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0C1A33"/>
+      <stop offset="1" stop-color="#103B55"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(316 226) rotate(46) scale(770)">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.42"/>
+      <stop offset="0.52" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="outerShadow" x="20" y="34" width="984" height="1000" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="34" stdDeviation="34" flood-color="#071120" flood-opacity="0.34"/>
+    </filter>
+    <filter id="markShadow" x="184" y="188" width="656" height="660" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#071120" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#outerShadow)">
+    <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#background)"/>
+    <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#glow)"/>
+    <rect x="82" y="82" width="860" height="860" rx="206" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="28"/>
+  </g>
+
+  <g filter="url(#markShadow)">
+    <path d="M264 348c0-57.4 46.6-104 104-104h236c57.4 0 104 46.6 104 104v76H264v-76Z" fill="url(#surface)"/>
+    <path d="M316 412h392c40.9 0 74 33.1 74 74v190c0 57.4-46.6 104-104 104H440c-57.4 0-104-46.6-104-104v-76H264V486c0-40.9 33.1-74 74-74h-22Z" fill="url(#surface)"/>
+
+    <path d="M364 496c0-17.7 14.3-32 32-32h150c17.7 0 32 14.3 32 32v56c0 17.7-14.3 32-32 32H396c-17.7 0-32-14.3-32-32v-56Z" fill="url(#cut)" opacity="0.94"/>
+    <path d="M494 550c0-17.7 14.3-32 32-32h110c17.7 0 32 14.3 32 32v56c0 17.7-14.3 32-32 32H526c-17.7 0-32-14.3-32-32v-56Z" fill="url(#cut)" opacity="0.94"/>
+    <path d="M606 604c0-17.7 14.3-32 32-32h88c17.7 0 32 14.3 32 32v56c0 17.7-14.3 32-32 32h-88c-17.7 0-32-14.3-32-32v-56Z" fill="url(#cut)" opacity="0.94"/>
+
+    <path d="M396 524h129c59.6 0 108 48.4 108 108v28" fill="none" stroke="#31D3FF" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M396 524h129c59.6 0 108 48.4 108 108v28" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <circle cx="396" cy="524" r="42" fill="#31D3FF"/>
+    <circle cx="633" cy="660" r="42" fill="#A6F05C"/>
+    <circle cx="396" cy="524" r="18" fill="#0E2341"/>
+    <circle cx="633" cy="660" r="18" fill="#0E2341"/>
+  </g>
+</svg>
