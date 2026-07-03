@@ -68,10 +68,70 @@ async function copyWithFeedback(btn, text) {
   }, 1400);
 }
 
+function sampleBodyForEndpoint(endpoint) {
+  if (endpoint === "/open") return { url: "https://example.com", foreground: true };
+  if (endpoint === "/inspect") return { pageId: 123 };
+  if (endpoint === "/run-js") return { pageId: 123, script: "document.title" };
+  if (endpoint === "/tap")
+    return { pageId: 123, selector: "button[type='submit']", mode: "mouse" };
+  if (endpoint === "/input")
+    return { pageId: 123, selector: "input[name='q']", text: "hello" };
+  if (endpoint === "/request")
+    return { pageId: 123, url: "/api/animals", method: "GET" };
+  if (endpoint === "/capture")
+    return { pageId: 123, format: "png", fullPage: false };
+  if (endpoint === "/cookies") return { url: "https://example.com" };
+  if (endpoint === "/sessions") return {};
+  return { pageId: 123 };
+}
+
+function fetchSnippet(method, endpoint) {
+  const url = `http://127.0.0.1:9527${endpoint}`;
+  if (method === "GET") {
+    return `fetch(${JSON.stringify(url)})`;
+  }
+
+  return `fetch(${JSON.stringify(url)}, {
+  method: ${JSON.stringify(method)},
+  headers: {
+    "Content-Type": "application/json",
+    "X-TabWorks-Bridge": "1"
+  },
+  body: JSON.stringify(${JSON.stringify(sampleBodyForEndpoint(endpoint), null, 2).replace(/\n/g, "\n  ")})
+})`;
+}
+
+function buildApiRowCopy(btn) {
+  const row = btn.closest(".api-row");
+  if (!row || row.classList.contains("header")) return null;
+
+  const code = row.querySelector(".cap-code")?.textContent?.trim() || "";
+  const capability = row.querySelector(".cap-title strong")?.textContent?.trim() || "";
+  const method = row.querySelector(".method")?.textContent?.trim() || "";
+  const endpoint = row.querySelector(".endpoint")?.textContent?.trim() || "";
+  const purpose = row.querySelector(".muted")?.textContent?.trim().replace(/\s+/g, " ") || "";
+  const dependency = row.querySelector(".tag")?.textContent?.trim() || "";
+
+  if (!method || !endpoint) return null;
+
+  return `TabWorks Bridge 接口
+
+能力: ${capability}${code ? ` (${code})` : ""}
+方法: ${method}
+接口: ${endpoint}
+用途: ${purpose}
+依赖: ${dependency}
+
+fetch 示例:
+${fetchSnippet(method, endpoint)}
+`;
+}
+
 for (const btn of document.querySelectorAll("[data-copy]")) {
-  btn.addEventListener("click", () =>
-    copyWithFeedback(btn, btn.getAttribute("data-copy") || ""),
-  );
+  btn.addEventListener("click", () => {
+    const text = buildApiRowCopy(btn) || btn.getAttribute("data-copy") || "";
+    copyWithFeedback(btn, text);
+  });
 }
 
 openLogsBtn.addEventListener("click", () => {
