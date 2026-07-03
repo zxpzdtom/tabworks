@@ -10,6 +10,7 @@
  * - tabs：标签页管理（list / new / close / select）
  * - cookies：按域名或 URL 读取 cookie
  * - screenshot：页面截图（可视区或全页）
+ * - recording：启动 / 停止 UI 操作录制
  * - close-window：关闭自动化专用窗口
  * - sessions：查看当前自动化会话状态
  *
@@ -155,6 +156,7 @@ function updateBadge() {
 // ─── 自动化窗口隔离 ──────────────────────────────────────────────────
 
 const automationSessions = new Map();
+const recordingTabs = new Map(); // Map<tabId, { sessionId, startedAt }>
 
 function getWorkspaceKey(workspace) {
   return workspace?.trim() || "default";
@@ -226,6 +228,10 @@ chrome.windows.onRemoved.addListener((windowId) => {
       broadcastSessions();
     }
   }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  recordingTabs.delete(tabId);
 });
 
 // ─── CDP 工具函数 ────────────────────────────────────────────────────
@@ -505,6 +511,25 @@ async function listAutomationWebTabs(workspace) {
   }
 }
 
+async function resolveRecordingTabId(tabId) {
+  if (tabId !== undefined && tabId !== null) return tabId;
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const tab = tabs.find((item) => item.id && isDebuggableUrl(item.url));
+  if (!tab?.id) throw new Error("未找到可录制的当前网页标签页");
+  return tab.id;
+}
+
+async function sendMessageToTab(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (err) {
+    throw new Error(
+      "无法连接页面录制脚本，请刷新目标页面或重新加载扩展后再试：" +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 // ─── 命令分发 ────────────────────────────────────────────────────────
 
 async function handleCommand(cmd) {
@@ -524,6 +549,8 @@ async function handleCommand(cmd) {
         return await handleCookies(cmd);
       case "screenshot":
         return await handleScreenshot(cmd, workspace);
+      case "recording":
+        return await handleRecording(cmd);
       case "close-window":
         return await handleCloseWindow(cmd, workspace);
       case "sessions":
@@ -804,6 +831,78 @@ async function handleScreenshot(cmd, workspace) {
   }
 }
 
+async function handleRecording(cmd) {
+  const op = cmd.op;
+  if (op === "start") {
+    const tabId = await resolveRecordingTabId(cmd.tabId);
+    const tab = await chrome.tabs.get(tabId);
+    if (!isDebuggableUrl(tab.url)) {
+      return { id: cmd.id, ok: false, error: `无法录制当前 URL：${tab.url}` };
+    }
+    const response = await sendMessageToTab(tabId, {
+      type: "tabworks-recording-start",
+      sessionId: cmd.sessionId,
+    });
+    recordingTabs.set(tabId, {
+      sessionId: cmd.sessionId,
+      startedAt: Date.now(),
+    });
+    return {
+      id: cmd.id,
+      ok: true,
+      data: {
+        sessionId: cmd.sessionId,
+        tabId,
+        url: response?.url ?? tab.url,
+        title: response?.title ?? tab.title,
+      },
+    };
+  }
+
+  if (op === "stop") {
+    const sessionId = cmd.sessionId;
+    const entries = [...recordingTabs.entries()];
+    const matched = entries.find(
+      ([tabId, item]) =>
+        item.sessionId === sessionId ||
+        (cmd.tabId !== undefined && Number(tabId) === Number(cmd.tabId)),
+    );
+    if (!matched) {
+      return { id: cmd.id, ok: false, error: "未找到正在录制的标签页" };
+    }
+    const [tabId, item] = matched;
+    const response = await sendMessageToTab(tabId, {
+      type: "tabworks-recording-stop",
+      sessionId: item.sessionId,
+    });
+    recordingTabs.delete(tabId);
+    return {
+      id: cmd.id,
+      ok: true,
+      data: {
+        sessionId: item.sessionId,
+        tabId,
+        url: response?.url,
+        title: response?.title,
+      },
+    };
+  }
+
+  if (op === "status") {
+    return {
+      id: cmd.id,
+      ok: true,
+      data: [...recordingTabs.entries()].map(([tabId, item]) => ({
+        tabId,
+        sessionId: item.sessionId,
+        startedAt: item.startedAt,
+      })),
+    };
+  }
+
+  return { id: cmd.id, ok: false, error: `未知 recording op: ${op}` };
+}
+
 async function handleCloseWindow(cmd, workspace) {
   const session = automationSessions.get(workspace);
   if (session) {
@@ -961,6 +1060,25 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 
   port.onDisconnect.addListener(() => popupPorts.delete(port));
+});
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message?.type !== "tabworks-recording-event") return false;
+  const tabId = sender.tab?.id;
+  if (!tabId) return false;
+  const recording = recordingTabs.get(tabId);
+  if (!recording || recording.sessionId !== message.sessionId) return false;
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(
+      JSON.stringify({
+        type: "recording-event",
+        sessionId: recording.sessionId,
+        tabId,
+        event: message.event,
+      }),
+    );
+  }
+  return false;
 });
 
 // ─── 生命周期 ────────────────────────────────────────────────────────

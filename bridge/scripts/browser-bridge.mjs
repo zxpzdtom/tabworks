@@ -19,7 +19,7 @@
  */
 
 import http from "node:http";
-import { readdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { extname, join, relative } from "node:path";
 import { WebSocketServer } from "ws";
@@ -34,6 +34,7 @@ const STARTED_AT = Date.now();
 const PROJECT_DIR = join(import.meta.dirname, "..", "..");
 const LOGS_DIR = join(PROJECT_DIR, "logs");
 const SCREENSHOTS_DIR = join(LOGS_DIR, "screenshots");
+const UI_RECORDINGS_DIR = join(PROJECT_DIR, ".bridge", "ui-record");
 const VIEWER_DIST_DIR = join(PROJECT_DIR, "viewer", "dist");
 const INDEX_HTML = join(VIEWER_DIST_DIR, "index.html");
 const BRIDGE_ROUTES = new Set([
@@ -51,6 +52,9 @@ const BRIDGE_ROUTES = new Set([
   "/request",
   "/cookies",
   "/sessions",
+  "/recording/start",
+  "/recording/stop",
+  "/recording/status",
   "/shutdown",
 ]);
 const VIEWER_CORS_HEADERS = {
@@ -80,6 +84,7 @@ const pending = new Map(); // 等待扩展回复的请求 Map<id, {resolve, reje
 let nextId = 0;
 const logBuffer = []; // 扩展转发的 console 日志（最多 200 条）
 const MAX_LOG_BUFFER = 200;
+const uiRecordings = new Map();
 
 function isExtensionConnected() {
   return extensionWs !== null && extensionWs.readyState === 1; // WebSocket.OPEN = 1
@@ -171,6 +176,48 @@ function todayDate() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate(),
   ).padStart(2, "0")}`;
+}
+
+function createRecordingSessionId() {
+  return `ui_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getRecordingStatus() {
+  return [...uiRecordings.values()].map((recording) => ({
+    sessionId: recording.sessionId,
+    tabId: recording.tabId,
+    url: recording.url,
+    title: recording.title,
+    startedAt: recording.startedAt,
+    eventCount: recording.events.length,
+    outDir: recording.outDir,
+  }));
+}
+
+function appendRecordingEvent(sessionId, tabId, event) {
+  const recording = uiRecordings.get(sessionId);
+  if (!recording) return false;
+  recording.tabId = tabId ?? recording.tabId;
+  recording.events.push(event);
+  recording.updatedAt = new Date().toISOString();
+  if (event?.url) recording.url = event.url;
+  if (event?.title) recording.title = event.title;
+  return true;
+}
+
+async function finishRecording(sessionId, finalMeta = {}) {
+  const recording = uiRecordings.get(sessionId);
+  if (!recording) return null;
+  recording.stoppedAt = new Date().toISOString();
+  if (finalMeta.url) recording.url = finalMeta.url;
+  if (finalMeta.title) recording.title = finalMeta.title;
+  await mkdir(recording.outDir, { recursive: true });
+  await writeFile(
+    join(recording.outDir, "session.json"),
+    JSON.stringify(recording, null, 2),
+  );
+  uiRecordings.delete(sessionId);
+  return recording;
 }
 
 function aggregateLogs(entries) {
@@ -945,6 +992,77 @@ const httpServer = http.createServer(async (req, res) => {
       return respond(res, 200, result);
     }
 
+    // POST /recording/start — 开始录制当前或指定标签页的 UI 操作
+    if (req.method === "POST" && url.pathname === "/recording/start") {
+      const body = await parseJson(req);
+      const sessionId = body.sessionId || createRecordingSessionId();
+      const outDir = join(UI_RECORDINGS_DIR, sessionId);
+      uiRecordings.set(sessionId, {
+        sessionId,
+        tabId: body.pageId ?? body.tabId ?? null,
+        url: body.url ?? "",
+        title: "",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        outDir,
+        events: [],
+      });
+
+      try {
+        const result = await sendToExtension({
+          action: "recording",
+          op: "start",
+          sessionId,
+          tabId: body.pageId ?? body.tabId,
+        });
+        const recording = uiRecordings.get(sessionId);
+        if (recording) {
+          recording.tabId = result.tabId ?? recording.tabId;
+          recording.url = result.url ?? recording.url;
+          recording.title = result.title ?? recording.title;
+        }
+        return respond(res, 200, {
+          ok: true,
+          sessionId,
+          tabId: result.tabId,
+          url: result.url,
+          title: result.title,
+          outDir,
+        });
+      } catch (err) {
+        uiRecordings.delete(sessionId);
+        throw err;
+      }
+    }
+
+    // POST /recording/stop — 停止录制并写入 .bridge/ui-record/<sessionId>/session.json
+    if (req.method === "POST" && url.pathname === "/recording/stop") {
+      const body = await parseJson(req);
+      requireField(body.sessionId, "sessionId");
+      const result = await sendToExtension({
+        action: "recording",
+        op: "stop",
+        sessionId: body.sessionId,
+        tabId: body.pageId ?? body.tabId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const recording = await finishRecording(body.sessionId, result);
+      if (!recording) return respond(res, 404, { error: "录制会话不存在" });
+      return respond(res, 200, {
+        ok: true,
+        sessionId: body.sessionId,
+        eventCount: recording.events.length,
+        outDir: recording.outDir,
+        url: recording.url,
+        title: recording.title,
+      });
+    }
+
+    // POST /recording/status — 查看当前进行中的 UI 录制
+    if (req.method === "POST" && url.pathname === "/recording/status") {
+      return respond(res, 200, { recordings: getRecordingStatus() });
+    }
+
     return respond(res, 404, { error: "未知路由" });
   } catch (err) {
     return respond(res, 500, { error: err.message || String(err) });
@@ -1009,6 +1127,12 @@ wss.on("connection", (ws) => {
       console.error(`${prefix} ${msg.msg}`);
       logBuffer.push({ level: msg.level, msg: msg.msg, ts: msg.ts });
       if (logBuffer.length > MAX_LOG_BUFFER) logBuffer.shift();
+      return;
+    }
+
+    // UI 录制事件转发
+    if (msg.type === "recording-event") {
+      appendRecordingEvent(msg.sessionId, msg.tabId, msg.event);
       return;
     }
 
