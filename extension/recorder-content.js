@@ -194,6 +194,87 @@
     };
   }
 
+  function cleanLabel(value) {
+    return String(value || "")
+      .replace(/To pick up a draggable item[\s\S]*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function rowLabel(el) {
+    const text = cleanLabel(el?.innerText || el?.textContent || "");
+    return text.slice(0, 80);
+  }
+
+  function sortableSnapshotFromTarget(target) {
+    let row = target;
+    while (row && row !== document.body) {
+      const rect = row.getBoundingClientRect?.();
+      const label = rowLabel(row);
+      if (
+        rect &&
+        rect.width >= 120 &&
+        rect.height >= 28 &&
+        rect.height <= 90 &&
+        label &&
+        !/^(取\s*消|确\s*定|自定义导航栏)/.test(label)
+      ) {
+        break;
+      }
+      row = row.parentElement;
+    }
+    if (!row || row === document.body) return null;
+    const container = row.parentElement;
+    if (!container) return null;
+    const rows = Array.from(container.children).filter((child) => {
+      const rect = child.getBoundingClientRect?.();
+      const label = rowLabel(child);
+      return rect && rect.width >= 120 && rect.height >= 28 && rect.height <= 90 && label;
+    });
+    if (rows.length < 2) return null;
+    const labels = rows.map(rowLabel);
+    const sourceLabel = rowLabel(row);
+    const fromIndex = rows.indexOf(row);
+    if (fromIndex < 0 || !sourceLabel) return null;
+    return {
+      sourceLabel,
+      fromIndex,
+      labels,
+      container: selectorMeta(container),
+      rowSelector: selectorMeta(row),
+    };
+  }
+
+  function sortableAfter(before) {
+    if (!before?.labels?.length || !before.sourceLabel) return null;
+    const containerSelector = before.container?.preferredSelector;
+    const scope = containerSelector ? document.querySelector(containerSelector) : document;
+    const matching = [];
+    for (const el of Array.from((scope || document).querySelectorAll("*"))) {
+      if (rowLabel(el) === before.sourceLabel) matching.push(el);
+    }
+    const source = matching.find((el) => {
+      const rect = el.getBoundingClientRect?.();
+      return rect && rect.width >= 120 && rect.height >= 28 && rect.height <= 90;
+    });
+    const container = source?.parentElement;
+    if (!container) return null;
+    const labels = Array.from(container.children)
+      .map(rowLabel)
+      .filter(Boolean);
+    const toIndex = labels.indexOf(before.sourceLabel);
+    if (toIndex < 0) return null;
+    return {
+      sourceLabel: before.sourceLabel,
+      fromIndex: before.fromIndex,
+      toIndex,
+      moveDelta: toIndex - before.fromIndex,
+      before: before.labels,
+      after: labels,
+      rowElement: before.rowSelector,
+    };
+  }
+
   function pointDistance(a, b) {
     return Math.hypot((b?.x || 0) - (a?.x || 0), (b?.y || 0) - (a?.y || 0));
   }
@@ -238,6 +319,7 @@
         lastPoint: point,
         element: selectorMeta(target),
         localPoint: localPointForEvent(event, target),
+        sortable: sortableSnapshotFromTarget(target),
       };
     },
     true,
@@ -266,7 +348,7 @@
       };
       if (distance >= DRAG_DISTANCE_PX) {
         suppressClickUntil = performance.now() + 350;
-        send({
+        const dragEvent = {
           kind: "drag",
           ...base,
           targetElement: targetMetaFromEvent(event),
@@ -280,7 +362,12 @@
           elementHeight: pointerStart.localPoint?.height,
           deltaX: endedPoint.x - pointerStart.point.x,
           deltaY: endedPoint.y - pointerStart.point.y,
-        });
+        };
+        const sortableBefore = pointerStart.sortable;
+        setTimeout(() => {
+          const sortable = sortableAfter(sortableBefore);
+          send(sortable ? { ...dragEvent, sortable } : dragEvent);
+        }, 120);
       } else if (durationMs >= LONG_PRESS_MS) {
         suppressClickUntil = performance.now() + 350;
         send({

@@ -443,6 +443,50 @@ async function cdpMouseDrag(tabId, fromX, fromY, toX, toY, durationMs = 450) {
   return { dragged: true, fromX: start.x, fromY: start.y, toX: end.x, toY: end.y, durationMs: dragMs };
 }
 
+const KEY_DEFINITIONS = {
+  Space: { key: " ", code: "Space", text: " ", windowsVirtualKeyCode: 32 },
+  Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+  Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+  Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+  Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+};
+
+async function cdpKeyPress(tabId, key) {
+  await ensureAttached(tabId);
+  const definition =
+    KEY_DEFINITIONS[key] ||
+    (String(key || "").length === 1
+      ? {
+          key: String(key),
+          code: `Key${String(key).toUpperCase()}`,
+          text: String(key),
+          windowsVirtualKeyCode: String(key).toUpperCase().charCodeAt(0),
+        }
+      : null);
+  if (!definition) throw new Error(`不支持的按键: ${key}`);
+  const base = {
+    key: definition.key,
+    code: definition.code,
+    windowsVirtualKeyCode: definition.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: definition.windowsVirtualKeyCode,
+  };
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...base,
+    text: definition.text,
+  });
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    ...base,
+  });
+  return { pressed: true, key };
+}
+
 async function cdpDetach(tabId) {
   if (!attachedTabs.has(tabId)) return;
   attachedTabs.delete(tabId);
@@ -737,6 +781,8 @@ async function handleCommand(cmd) {
         return await handleExec(cmd, workspace);
       case "mouse":
         return await handleMouse(cmd, workspace);
+      case "key":
+        return await handleKey(cmd, workspace);
       case "navigate":
         return await handleNavigate(cmd, workspace);
       case "tabs":
@@ -799,6 +845,21 @@ async function handleMouse(cmd, workspace) {
               cmd.toY,
               cmd.durationMs,
             );
+    return { id: cmd.id, ok: true, data };
+  } catch (err) {
+    return {
+      id: cmd.id,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function handleKey(cmd, workspace) {
+  if (!cmd.key) return { id: cmd.id, ok: false, error: "缺少 key 字段" };
+  const tabId = await resolveTabId(cmd.tabId, workspace);
+  try {
+    const data = await cdpKeyPress(tabId, cmd.key);
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return {

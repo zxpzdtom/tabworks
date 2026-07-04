@@ -408,20 +408,33 @@ function buildDownloadedScript(recordingData) {
     } else if (event.kind === "long-press" && selector) {
       lines.push(`  await bridge('/press', { pageId, selector: ${jsString(selector)}, durationMs: ${Math.max(100, Math.round(Number(event.durationMs || 700)))} });`);
     } else if (event.kind === "drag" && selector) {
-      const body = [
-        "pageId",
-        `selector: ${jsString(selector)}`,
-        `deltaX: ${numberLiteral(event.deltaX, 0)}`,
-        `deltaY: ${numberLiteral(event.deltaY, 0)}`,
-        `durationMs: ${Math.max(80, Math.round(Number(event.durationMs || 450)))}`,
-      ];
-      if (Number.isFinite(Number(event.startOffsetX))) {
-        body.push(`offsetX: ${numberLiteral(event.startOffsetX, 0)}`);
+      const sortableDelta = Number(event.sortable?.moveDelta);
+      if (Number.isInteger(sortableDelta) && sortableDelta !== 0) {
+        lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus?.(); return document.activeElement === el; })()`)} });`);
+        lines.push("  await bridge('/key', { pageId, key: 'Space' });");
+        lines.push("  await sleep(120);");
+        const key = sortableDelta > 0 ? "ArrowDown" : "ArrowUp";
+        for (let i = 0; i < Math.abs(sortableDelta); i += 1) {
+          lines.push(`  await bridge('/key', { pageId, key: '${key}' });`);
+          lines.push("  await sleep(80);");
+        }
+        lines.push("  await bridge('/key', { pageId, key: 'Space' });");
+      } else {
+        const body = [
+          "pageId",
+          `selector: ${jsString(selector)}`,
+          `deltaX: ${numberLiteral(event.deltaX, 0)}`,
+          `deltaY: ${numberLiteral(event.deltaY, 0)}`,
+          `durationMs: ${Math.max(80, Math.round(Number(event.durationMs || 450)))}`,
+        ];
+        if (Number.isFinite(Number(event.startOffsetX))) {
+          body.push(`offsetX: ${numberLiteral(event.startOffsetX, 0)}`);
+        }
+        if (Number.isFinite(Number(event.startOffsetY))) {
+          body.push(`offsetY: ${numberLiteral(event.startOffsetY, 0)}`);
+        }
+        lines.push(`  await bridge('/drag', { ${body.join(", ")} });`);
       }
-      if (Number.isFinite(Number(event.startOffsetY))) {
-        body.push(`offsetY: ${numberLiteral(event.startOffsetY, 0)}`);
-      }
-      lines.push(`  await bridge('/drag', { ${body.join(", ")} });`);
     } else if (event.kind === "input" && selector && !event.redacted) {
       lines.push(`  await bridge('/input', { pageId, selector: ${jsString(selector)}, text: ${JSON.stringify(event.value ?? "")} });`);
     } else if (event.kind === "scroll") {

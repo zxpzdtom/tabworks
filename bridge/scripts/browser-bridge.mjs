@@ -48,6 +48,7 @@ const BRIDGE_ROUTES = new Set([
   "/tap",
   "/press",
   "/drag",
+  "/key",
   "/input",
   "/move",
   "/capture",
@@ -922,6 +923,21 @@ const httpServer = http.createServer(async (req, res) => {
         workspace: body.workspace,
       });
       return respond(res, 200, { ok: true, start, end, result });
+    }
+
+    // POST /key — 发送可信键盘事件
+    if (req.method === "POST" && url.pathname === "/key") {
+      const body = await parseJson(req);
+      const tabId = body.pageId ?? body.tabId;
+      requireField(tabId, "pageId");
+      requireField(body.key, "key");
+      const result = await sendToExtension({
+        action: "key",
+        tabId,
+        key: body.key,
+        workspace: body.workspace,
+      });
+      return respond(res, 200, { ok: true, result });
     }
 
     // POST /input — 向输入框写入文字

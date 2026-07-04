@@ -66,6 +66,14 @@ const API_REFERENCE = [
     dependency: "debugger 权限",
   },
   {
+    code: "KEY",
+    capability: "键盘按键",
+    method: "POST",
+    endpoint: "/key",
+    purpose: "发送可信键盘事件；UI 录制脚本会用 Space/ArrowUp/ArrowDown 稳定回放 dnd-kit 排序。",
+    dependency: "debugger 权限",
+  },
+  {
     code: "INP",
     capability: "输入文本",
     method: "POST",
@@ -172,6 +180,7 @@ function sampleBodyForEndpoint(endpoint) {
     return { pageId: 123, selector: "[data-testid='hold']", durationMs: 700 };
   if (endpoint === "/drag")
     return { pageId: 123, selector: "[data-testid='slider']", deltaX: 120, deltaY: 0 };
+  if (endpoint === "/key") return { pageId: 123, key: "ArrowDown" };
   if (endpoint === "/input")
     return { pageId: 123, selector: "input[name='q']", text: "hello" };
   if (endpoint === "/request")
