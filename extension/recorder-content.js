@@ -1,5 +1,7 @@
 (() => {
-  if (globalThis.__tabworksRecorderLoaded) return;
+  const RECORDER_SCRIPT_VERSION = 5;
+  if (globalThis.__tabworksRecorderVersion === RECORDER_SCRIPT_VERSION) return;
+  globalThis.__tabworksRecorderVersion = RECORDER_SCRIPT_VERSION;
   globalThis.__tabworksRecorderLoaded = true;
 
   let recording = null;
@@ -281,8 +283,23 @@
   }
 
   function targetElementFromEvent(event) {
-    const raw = event.composedPath?.()[0] || event.target;
-    return raw?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") || raw;
+    const path = event.composedPath?.() || [];
+    const raw =
+      path.find((node) => node?.nodeType === Node.ELEMENT_NODE) ||
+      event.target?.parentElement ||
+      event.target;
+    const fallback = document.elementFromPoint?.(event.clientX || 0, event.clientY || 0);
+    const el =
+      raw?.nodeType === Node.ELEMENT_NODE
+        ? raw
+        : fallback?.nodeType === Node.ELEMENT_NODE
+          ? fallback
+          : null;
+    return (
+      el?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") ||
+      el ||
+      fallback
+    );
   }
 
   function targetMetaFromEvent(event) {
@@ -416,26 +433,30 @@
     true,
   );
 
+  function beginPointerGesture(event) {
+    const point = eventPoint(event);
+    const target = targetElementFromEvent(event);
+    pointerStart = {
+      pointerId: event.pointerId,
+      pointerType: event.pointerType || "mouse",
+      startedAt: performance.now(),
+      point,
+      lastPoint: point,
+      element: selectorMeta(target),
+      localPoint: localPointForEvent(event, target),
+      sortable: sortableSnapshotFromTarget(target),
+    };
+  }
+
   document.addEventListener(
     "pointerdown",
     (event) => {
       if (replaying || event.button !== 0 || !event.isPrimary) return;
       if (!recording) {
-        syncRecordingState();
+        syncRecordingState(() => beginPointerGesture(event));
         return;
       }
-      const point = eventPoint(event);
-      const target = targetElementFromEvent(event);
-      pointerStart = {
-        pointerId: event.pointerId,
-        pointerType: event.pointerType || "mouse",
-        startedAt: performance.now(),
-        point,
-        lastPoint: point,
-        element: selectorMeta(target),
-        localPoint: localPointForEvent(event, target),
-        sortable: sortableSnapshotFromTarget(target),
-      };
+      beginPointerGesture(event);
     },
     true,
   );
@@ -1038,7 +1059,9 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "tabworks-recording-start") {
-      startRecordingSession(message.sessionId);
+      if (!recording || recording.sessionId !== message.sessionId) {
+        startRecordingSession(message.sessionId);
+      }
       sendResponse({
         ok: true,
         url: location.href,

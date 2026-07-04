@@ -1684,7 +1684,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-chrome.webNavigation.onCommitted.addListener(async ({ tabId, frameId, url }) => {
+async function attachRecordingToFrame(tabId, frameId, url) {
   if (!Number.isInteger(tabId) || !Number.isInteger(frameId)) return;
   const recording = recordingTabs.get(tabId);
   if (!recording || !isDebuggableUrl(url)) return;
@@ -1701,6 +1701,18 @@ chrome.webNavigation.onCommitted.addListener(async ({ tabId, frameId, url }) => 
   } catch {
     /* frame 可能还没注入 content script，content script 初始化时还会主动 sync */
   }
+}
+
+chrome.webNavigation.onCommitted.addListener((details) => {
+  attachRecordingToFrame(details.tabId, details.frameId, details.url);
+});
+
+chrome.webNavigation.onDOMContentLoaded.addListener((details) => {
+  attachRecordingToFrame(details.tabId, details.frameId, details.url);
+});
+
+chrome.webNavigation.onCompleted.addListener((details) => {
+  attachRecordingToFrame(details.tabId, details.frameId, details.url);
 });
 
 // ─── 生命周期 ────────────────────────────────────────────────────────
