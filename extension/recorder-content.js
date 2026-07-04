@@ -631,8 +631,8 @@
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
     replayCursor.innerHTML = `
       <div class="tw-replay-cursor-glow"></div>
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 28 28" aria-hidden="true">
-        <path class="tw-replay-cursor-fill" d="M5.4 3.8 21.6 15.7l-7.1 1.3 4 5.9-3.2 2-3.9-6-4.7 4.8L5.4 3.8Z" />
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 24 24" aria-hidden="true">
+        <path class="tw-replay-cursor-fill" d="M5.7 4.1C5.1 3.7 4.4 4.25 4.62 4.98L8.95 20.15C9.18 20.95 10.28 21.08 10.68 20.34L12.94 16.12C13.12 15.78 13.48 15.58 13.86 15.6L19.05 15.8C19.92 15.84 20.25 14.69 19.52 14.22L5.7 4.1Z" />
       </svg>
       <div class="tw-replay-cursor-ring"></div>
     `;
@@ -642,8 +642,8 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
@@ -652,37 +652,38 @@
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-glow {
   position: absolute;
-  left: -15px;
+  left: -14px;
   top: -12px;
-  width: 48px;
-  height: 48px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(64, 156, 255, .42) 0%, rgba(64, 156, 255, .22) 36%, rgba(64, 156, 255, 0) 70%);
+  background: radial-gradient(circle, rgba(64, 156, 255, .36) 0%, rgba(64, 156, 255, .20) 34%, rgba(64, 156, 255, 0) 70%);
   filter: blur(2px);
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
   position: relative;
   display: block;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   overflow: visible;
   filter:
     drop-shadow(0 1px 1px rgba(15, 23, 42, .34))
-    drop-shadow(0 0 7px rgba(74, 158, 255, .62));
+    drop-shadow(0 0 6px rgba(74, 158, 255, .56));
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-fill {
   fill: #05070a;
   stroke: #fff;
-  stroke-width: 2.8;
+  stroke-width: 2.55;
+  stroke-linecap: round;
   stroke-linejoin: round;
   paint-order: stroke fill;
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-ring {
   position: absolute;
-  left: -7px;
-  top: -7px;
-  width: 22px;
-  height: 22px;
+  left: -6px;
+  top: -6px;
+  width: 20px;
+  height: 20px;
   border: 2px solid rgba(64, 156, 255, .58);
   border-radius: 50%;
   opacity: 0;
