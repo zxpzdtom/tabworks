@@ -164,8 +164,42 @@
     };
   }
 
+  function getFrameContext() {
+    const context = {
+      isTop: window.top === window,
+      url: location.href,
+      title: document.title,
+      frameName: window.name || "",
+      frameSelector: "",
+      frameIndex: null,
+      frameRect: null,
+    };
+    if (context.isTop) return context;
+
+    try {
+      const frameEl = window.frameElement;
+      if (!frameEl) return context;
+      const ownerDocument = frameEl.ownerDocument;
+      const frames = Array.from(ownerDocument.querySelectorAll("iframe,frame"));
+      const rect = frameEl.getBoundingClientRect();
+      context.frameName = frameEl.getAttribute("name") || context.frameName;
+      context.frameSelector = deepCssPath(frameEl, 8);
+      context.frameIndex = frames.indexOf(frameEl);
+      context.frameRect = {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    } catch {
+      /* Cross-origin parents may hide frameElement details. */
+    }
+    return context;
+  }
+
   function send(event) {
     if (!recording || replaying) return;
+    const frameContext = getFrameContext();
     chrome.runtime.sendMessage({
       type: "tabworks-recording-event",
       sessionId: recording.sessionId,
@@ -174,7 +208,8 @@
         at: now(),
         url: location.href,
         title: document.title,
-        inFrame: window.top !== window,
+        inFrame: !frameContext.isTop,
+        frameContext,
         ...event,
       },
     });
@@ -669,6 +704,59 @@
     }
   }
 
+  function showToast(message, kind = "success") {
+    const existing = document.querySelector("[data-tabworks-toast]");
+    if (existing) existing.remove();
+
+    const toast = document.createElement("div");
+    toast.setAttribute("data-tabworks-toast", "true");
+    toast.className = kind === "error" ? "error" : "success";
+    toast.textContent = message;
+
+    const styleId = "tabworks-toast-style";
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = `
+[data-tabworks-toast] {
+  position: fixed;
+  right: 18px;
+  top: 18px;
+  z-index: 2147483647;
+  max-width: min(360px, calc(100vw - 36px));
+  padding: 10px 13px;
+  border-radius: 12px;
+  color: #152033;
+  background: rgba(255, 255, 255, .96);
+  border: 1px solid rgba(15, 23, 42, .10);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .16), 0 2px 6px rgba(15, 23, 42, .10);
+  font: 500 13px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  opacity: 0;
+  transform: translate3d(0, -8px, 0) scale(.98);
+  transition: opacity 160ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
+  pointer-events: none;
+}
+[data-tabworks-toast].success {
+  border-color: rgba(18, 128, 92, .22);
+}
+[data-tabworks-toast].error {
+  border-color: rgba(194, 65, 58, .24);
+}
+[data-tabworks-toast].show {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}`;
+      document.documentElement.appendChild(style);
+    }
+
+    document.documentElement.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 180);
+    }, 2800);
+  }
+
   function setNativeValue(el, value) {
     const proto =
       el instanceof HTMLTextAreaElement
@@ -935,19 +1023,45 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "tabworks-recording-start") {
       startRecordingSession(message.sessionId);
-      sendResponse({ ok: true, url: location.href, title: document.title });
+      sendResponse({
+        ok: true,
+        url: location.href,
+        title: document.title,
+        frameContext: getFrameContext(),
+      });
       return true;
     }
 
     if (message?.type === "tabworks-recording-stop") {
       send({ kind: "stop" });
       recording = null;
-      sendResponse({ ok: true, url: location.href, title: document.title });
+      sendResponse({
+        ok: true,
+        url: location.href,
+        title: document.title,
+        frameContext: getFrameContext(),
+      });
       return true;
     }
 
     if (message?.type === "tabworks-recording-status") {
       sendResponse({ ok: true, recording: Boolean(recording), sessionId: recording?.sessionId });
+      return true;
+    }
+
+    if (message?.type === "tabworks-frame-context") {
+      sendResponse({
+        ok: true,
+        url: location.href,
+        title: document.title,
+        frameContext: getFrameContext(),
+      });
+      return true;
+    }
+
+    if (message?.type === "tabworks-recording-toast") {
+      showToast(message.message || "执行完成", message.kind || "success");
+      sendResponse({ ok: true });
       return true;
     }
 

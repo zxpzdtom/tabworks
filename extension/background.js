@@ -592,6 +592,24 @@ function normalizeFrameUrl(url) {
   }
 }
 
+function normalizeFrameName(name) {
+  return String(name || "").split("?")[0];
+}
+
+function frameContextFromEvent(event) {
+  return event?.frameContext || null;
+}
+
+function recordedFrameKey(event) {
+  const context = frameContextFromEvent(event);
+  if (context?.isTop) return "top";
+  if (context?.frameSelector) return `selector:${context.frameSelector}`;
+  if (context?.frameName) return `name:${normalizeFrameName(context.frameName)}`;
+  if (Number.isInteger(context?.frameIndex)) return `index:${context.frameIndex}`;
+  const frameId = Number.isInteger(event.frameId) ? event.frameId : 0;
+  return `id:${frameId}`;
+}
+
 async function resolveTabId(tabId, workspace) {
   if (tabId !== undefined) {
     try {
@@ -784,6 +802,71 @@ async function sendMessageToAllFrames(tabId, message) {
   };
 }
 
+async function collectFrameContexts(tabId) {
+  const response = await sendMessageToAllFrames(tabId, {
+    type: "tabworks-frame-context",
+  });
+  return response.frames.map((frame) => ({
+    frameId: frame.frameId,
+    parentFrameId: frame.parentFrameId,
+    url: frame.response?.url || frame.url,
+    ok: frame.ok,
+    error: frame.error,
+    frameContext: frame.response?.frameContext || null,
+  }));
+}
+
+function chooseReplayFrameId(frameEvents, frameContexts) {
+  const sample =
+    frameEvents.find((event) => frameContextFromEvent(event)) ||
+    frameEvents.find((event) => Number.isInteger(event.frameId)) ||
+    frameEvents[0] ||
+    {};
+  const recordedFrameId = Number.isInteger(sample.frameId) ? sample.frameId : 0;
+  const recordedContext = frameContextFromEvent(sample);
+
+  if (recordedContext?.isTop || (!recordedContext && recordedFrameId === 0)) {
+    return 0;
+  }
+
+  const recordedUrl = normalizeFrameUrl(
+    recordedContext?.url || sample.frameUrl || sample.url,
+  );
+  const candidates = frameContexts.filter((frame) => {
+    if (!frame.ok) return false;
+    if (!recordedUrl) return true;
+    return normalizeFrameUrl(frame.url || frame.frameContext?.url) === recordedUrl;
+  });
+  const scopedCandidates = candidates.length ? candidates : frameContexts;
+
+  if (recordedContext?.frameSelector) {
+    const matched = scopedCandidates.find(
+      (frame) => frame.frameContext?.frameSelector === recordedContext.frameSelector,
+    );
+    if (matched) return matched.frameId;
+  }
+
+  const recordedName = normalizeFrameName(recordedContext?.frameName);
+  if (recordedName) {
+    const matched = scopedCandidates.find(
+      (frame) => normalizeFrameName(frame.frameContext?.frameName) === recordedName,
+    );
+    if (matched) return matched.frameId;
+  }
+
+  if (Number.isInteger(recordedContext?.frameIndex)) {
+    const matched = scopedCandidates.find(
+      (frame) => frame.frameContext?.frameIndex === recordedContext.frameIndex,
+    );
+    if (matched) return matched.frameId;
+  }
+
+  const sameId = frameContexts.find((frame) => frame.frameId === recordedFrameId);
+  if (sameId) return sameId.frameId;
+  if (candidates.length === 1) return candidates[0].frameId;
+  return scopedCandidates[0]?.frameId ?? recordedFrameId;
+}
+
 function createRecordingSessionId() {
   return `ui_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -911,21 +994,18 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     );
     await injectRecorderIntoFrames(targetTabId);
   }
-  const currentFrames = await getTabFrames(targetTabId);
+  await injectRecorderIntoFrames(targetTabId);
+  const currentFrames = await collectFrameContexts(targetTabId);
   const grouped = new Map();
   for (const event of source) {
-    const recordedFrameId = Number.isInteger(event.frameId) ? event.frameId : 0;
-    const frameUrl = normalizeFrameUrl(event.frameUrl || event.url);
-    const matchedFrame =
-      frameUrl &&
-      currentFrames.find((frame) => normalizeFrameUrl(frame.url) === frameUrl);
-    const replayFrameId = matchedFrame?.frameId ?? recordedFrameId;
-    if (!grouped.has(replayFrameId)) grouped.set(replayFrameId, []);
-    grouped.get(replayFrameId).push(event);
+    const key = recordedFrameKey(event);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(event);
   }
 
   const results = [];
-  for (const [frameId, frameEvents] of grouped.entries()) {
+  for (const frameEvents of grouped.values()) {
+    const frameId = chooseReplayFrameId(frameEvents, currentFrames);
     try {
       const response = await sendMessageToTabFrame(targetTabId, frameId, {
         type: "tabworks-recording-replay",
@@ -942,12 +1022,28 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     }
   }
 
+  const played = results.reduce((sum, item) => sum + (item.played || 0), 0);
+  const failures = results.flatMap((item) => item.failures || []);
+  const ok = results.every((item) => item.ok !== false);
+  try {
+    await sendMessageToTabFrame(targetTabId, 0, {
+      type: "tabworks-recording-toast",
+      kind: ok && !failures.length ? "success" : "error",
+      message:
+        ok && !failures.length
+          ? `TabWorks 回放完成，执行 ${played} 步`
+          : `TabWorks 回放完成，${failures.length} 步未命中`,
+    });
+  } catch {
+    /* 顶层页面可能不支持注入，忽略 Toast 失败 */
+  }
+
   return {
     tabId: targetTabId,
-    ok: results.every((item) => item.ok !== false),
-    played: results.reduce((sum, item) => sum + (item.played || 0), 0),
+    ok,
+    played,
     skipped: results.reduce((sum, item) => sum + (item.skipped || 0), 0),
-    failures: results.flatMap((item) => item.failures || []),
+    failures,
     frames: results,
   };
 }
