@@ -367,6 +367,13 @@ function normalizeEvents(events = []) {
   return normalized;
 }
 
+function needsExtensionReplay(events = []) {
+  return events.some((event) => {
+    const selector = selectorForEvent(event);
+    return (Number.isInteger(event.frameId) && event.frameId !== 0) || selector.includes(">>>");
+  });
+}
+
 function buildDownloadedScript(recordingData) {
   const events = normalizeEvents(recordingData.events || []);
   const lines = [];
@@ -393,6 +400,23 @@ function buildDownloadedScript(recordingData) {
   lines.push(`  const opened = await bridge('/open', { url: ${jsString(recordingData.url || "https://example.com")}, foreground: true });`);
   lines.push("  const pageId = opened.pageId || opened.tabId;");
   lines.push("  await sleep(800);");
+  if (needsExtensionReplay(events)) {
+    lines.push("  await bridge('/recording/replay', {");
+    lines.push("    pageId,");
+    lines.push(`    title: ${jsString(recordingData.title || "")},`);
+    lines.push(`    url: ${jsString(recordingData.url || "")},`);
+    lines.push(`    events: ${JSON.stringify(events, null, 4).replace(/\n/g, "\n    ")},`);
+    lines.push("    maxDelayMs: 2000,");
+    lines.push("  });");
+    lines.push("}");
+    lines.push("");
+    lines.push("main().catch((error) => {");
+    lines.push("  console.error(error);");
+    lines.push("  process.exit(1);");
+    lines.push("});");
+    lines.push("");
+    return lines.join("\n");
+  }
   let previousAt = null;
   for (const event of events) {
     if (previousAt && event.at) {

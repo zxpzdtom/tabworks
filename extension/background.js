@@ -663,6 +663,66 @@ async function sendMessageToTab(tabId, message) {
   }
 }
 
+async function sendMessageToTabFrame(tabId, frameId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message, { frameId });
+  } catch (err) {
+    throw new Error(
+      "无法连接页面录制脚本，请刷新目标页面或重新加载扩展后再试：" +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
+async function getTabFrames(tabId) {
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    return (frames || [])
+      .filter((frame) => Number.isInteger(frame.frameId))
+      .map((frame) => ({
+        frameId: frame.frameId,
+        parentFrameId: frame.parentFrameId,
+        url: frame.url,
+      }));
+  } catch {
+    return [{ frameId: 0, parentFrameId: -1, url: "" }];
+  }
+}
+
+async function sendMessageToAllFrames(tabId, message) {
+  const frames = await getTabFrames(tabId);
+  const results = [];
+  for (const frame of frames) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, message, {
+        frameId: frame.frameId,
+      });
+      results.push({ ...frame, ok: true, response });
+    } catch (err) {
+      results.push({
+        ...frame,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  const connected = results.filter((item) => item.ok);
+  if (!connected.length) {
+    const firstError = results.find((item) => item.error)?.error || "没有 frame 响应";
+    throw new Error(
+      "无法连接页面录制脚本，请刷新目标页面或重新加载扩展后再试：" +
+        firstError,
+    );
+  }
+  return {
+    frames: results,
+    primary:
+      connected.find((item) => item.frameId === 0)?.response ||
+      connected[0]?.response ||
+      null,
+  };
+}
+
 function createRecordingSessionId() {
   return `ui_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -689,6 +749,7 @@ function recordingStatus(item) {
     title: item.title,
     startedAt: item.startedAt,
     eventCount: item.events?.length || 0,
+    frameCount: item.frames?.filter((frame) => frame.ok).length || 0,
   };
 }
 
@@ -709,7 +770,7 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
   recordingTabs.set(targetTabId, item);
   let response;
   try {
-    response = await sendMessageToTab(targetTabId, {
+    response = await sendMessageToAllFrames(targetTabId, {
       type: "tabworks-recording-start",
       sessionId,
     });
@@ -717,8 +778,9 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
     recordingTabs.delete(targetTabId);
     throw err;
   }
-  item.url = response?.url ?? item.url;
-  item.title = response?.title ?? item.title;
+  item.frames = response.frames;
+  item.url = response.primary?.url ?? item.url;
+  item.title = response.primary?.title ?? item.title;
   return recordingStatus(item);
 }
 
@@ -732,22 +794,24 @@ async function stopUiRecording(sessionId, tabId) {
   if (!matched) throw new Error("未找到正在录制的标签页");
 
   const [targetTabId, item] = matched;
-  const response = await sendMessageToTab(targetTabId, {
+  const response = await sendMessageToAllFrames(targetTabId, {
     type: "tabworks-recording-stop",
     sessionId: item.sessionId,
   });
   item.events.push({
     seq: item.events.length + 1,
     at: new Date().toISOString(),
-    url: response?.url ?? item.url,
-    title: response?.title ?? item.title,
+    url: response.primary?.url ?? item.url,
+    title: response.primary?.title ?? item.title,
     kind: "stop",
+    frameId: 0,
   });
   recordingTabs.delete(targetTabId);
   const saved = {
     ...item,
-    url: response?.url ?? item.url,
-    title: response?.title ?? item.title,
+    url: response.primary?.url ?? item.url,
+    title: response.primary?.title ?? item.title,
+    frames: response.frames,
     stoppedAt: new Date().toISOString(),
     eventCount: item.events.length,
   };
@@ -762,12 +826,39 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     (last && (!sessionId || last.sessionId === sessionId) ? last.events : null);
   if (!source) throw new Error("没有可回放的录制");
   const targetTabId = await resolveRecordingTabId(tabId);
-  const response = await sendMessageToTab(targetTabId, {
-    type: "tabworks-recording-replay",
-    events: source,
-    options: options || {},
-  });
-  return { tabId: targetTabId, ...(response || {}) };
+  const grouped = new Map();
+  for (const event of source) {
+    const frameId = Number.isInteger(event.frameId) ? event.frameId : 0;
+    if (!grouped.has(frameId)) grouped.set(frameId, []);
+    grouped.get(frameId).push(event);
+  }
+
+  const results = [];
+  for (const [frameId, frameEvents] of grouped.entries()) {
+    try {
+      const response = await sendMessageToTabFrame(targetTabId, frameId, {
+        type: "tabworks-recording-replay",
+        events: frameEvents,
+        options: options || {},
+      });
+      results.push({ frameId, ...(response || {}) });
+    } catch (err) {
+      results.push({
+        frameId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return {
+    tabId: targetTabId,
+    ok: results.every((item) => item.ok !== false),
+    played: results.reduce((sum, item) => sum + (item.played || 0), 0),
+    skipped: results.reduce((sum, item) => sum + (item.skipped || 0), 0),
+    failures: results.flatMap((item) => item.failures || []),
+    frames: results,
+  };
 }
 
 // ─── 命令分发 ────────────────────────────────────────────────────────
@@ -1372,16 +1463,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!tabId) return false;
   const recording = recordingTabs.get(tabId);
   if (!recording || recording.sessionId !== message.sessionId) return false;
-  recording.events.push(message.event);
-  if (message.event?.url) recording.url = message.event.url;
-  if (message.event?.title) recording.title = message.event.title;
+  const event = {
+    ...message.event,
+    frameId: sender.frameId ?? 0,
+    frameUrl: sender.url || message.event?.url,
+  };
+  recording.events.push(event);
+  if ((sender.frameId ?? 0) === 0) {
+    if (message.event?.url) recording.url = message.event.url;
+    if (message.event?.title) recording.title = message.event.title;
+  }
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(
       JSON.stringify({
         type: "recording-event",
         sessionId: recording.sessionId,
         tabId,
-        event: message.event,
+        event,
       }),
     );
   }

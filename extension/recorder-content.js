@@ -5,6 +5,8 @@
   let lastScrollTimer = null;
   let pointerStart = null;
   let suppressClickUntil = 0;
+  let replayCursor = null;
+  let replayCursorPoint = null;
   const inputTimers = new WeakMap();
   const DRAG_DISTANCE_PX = 12;
   const LONG_PRESS_MS = 650;
@@ -63,6 +65,45 @@
     return parts.join(" > ");
   }
 
+  function deepCssPath(el, maxParts = 5) {
+    const segments = [];
+    let current = el;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      segments.unshift(cssPath(current, maxParts));
+      const root = current.getRootNode?.();
+      current = root instanceof ShadowRoot ? root.host : null;
+    }
+    return segments.filter(Boolean).join(" >>> ");
+  }
+
+  function deepQuerySelector(selector, root = document) {
+    if (!selector) return null;
+    const parts = String(selector).split(/\s*>>>\s*/).filter(Boolean);
+    let scope = root;
+    let found = null;
+    for (const [index, part] of parts.entries()) {
+      found = scope.querySelector?.(part) || null;
+      if (!found) return null;
+      if (index < parts.length - 1) scope = found.shadowRoot;
+      if (!scope && index < parts.length - 1) return null;
+    }
+    return found;
+  }
+
+  function deepSelectorCount(selector) {
+    if (!selector) return 0;
+    const parts = String(selector).split(/\s*>>>\s*/).filter(Boolean);
+    if (parts.length <= 1) return selectorCount(selector);
+    const last = parts.pop();
+    const host = deepQuerySelector(parts.join(" >>> "));
+    if (!host?.shadowRoot) return 0;
+    try {
+      return host.shadowRoot.querySelectorAll(last).length;
+    } catch {
+      return 0;
+    }
+  }
+
   function selectorCount(selector) {
     try {
       return document.querySelectorAll(selector).length;
@@ -73,7 +114,9 @@
 
   function addCandidate(candidates, kind, selector) {
     if (!selector) return;
-    const count = selectorCount(selector);
+    const count = selector.includes(">>>")
+      ? deepSelectorCount(selector)
+      : selectorCount(selector);
     candidates.push({
       kind,
       selector,
@@ -96,8 +139,8 @@
     if (id) addCandidate(candidates, "id", `#${cssEscape(id)}`);
     if (ariaLabel) addCandidate(candidates, "aria", `[aria-label="${cssEscape(ariaLabel)}"]`);
     if (name) addCandidate(candidates, "name", `[name="${cssEscape(name)}"]`);
-    addCandidate(candidates, "css", cssPath(el));
-    addCandidate(candidates, "css-full", cssPath(el, 12));
+    addCandidate(candidates, "css", deepCssPath(el));
+    addCandidate(candidates, "css-full", deepCssPath(el, 12));
 
     const preferred =
       candidates.find((item) => item.unique)?.selector ||
@@ -128,6 +171,7 @@
         at: now(),
         url: location.href,
         title: document.title,
+        inFrame: window.top !== window,
         ...event,
       },
     });
@@ -176,7 +220,8 @@
   }
 
   function targetElementFromEvent(event) {
-    return event.target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") || event.target;
+    const raw = event.composedPath?.()[0] || event.target;
+    return raw?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") || raw;
   }
 
   function targetMetaFromEvent(event) {
@@ -248,7 +293,7 @@
   function sortableAfter(before) {
     if (!before?.labels?.length || !before.sourceLabel) return null;
     const containerSelector = before.container?.preferredSelector;
-    const scope = containerSelector ? document.querySelector(containerSelector) : document;
+    const scope = containerSelector ? deepQuerySelector(containerSelector) : document;
     const matching = [];
     for (const el of Array.from((scope || document).querySelectorAll("*"))) {
       if (rowLabel(el) === before.sourceLabel) matching.push(el);
@@ -487,11 +532,89 @@
   }
 
   function selectorForEvent(event) {
+    const selectors = event?.element?.selectors || [];
     return (
+      selectors.find((item) => item.unique)?.selector ||
       event?.element?.preferredSelector ||
-      event?.element?.selectors?.[0]?.selector ||
+      selectors.find((item) => item.selector)?.selector ||
       ""
     );
+  }
+
+  function findEventElement(event) {
+    const selector = selectorForEvent(event);
+    return selector ? deepQuerySelector(selector) : null;
+  }
+
+  function ensureReplayCursor() {
+    if (replayCursor) return replayCursor;
+    replayCursor = document.createElement("div");
+    replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
+    replayCursor.innerHTML = `<div class="tw-replay-cursor-tip"></div><div class="tw-replay-cursor-ring"></div>`;
+    const style = document.createElement("style");
+    style.textContent = `
+[data-tabworks-replay-cursor] {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 18px;
+  height: 18px;
+  z-index: 2147483647;
+  pointer-events: none;
+  transform: translate3d(-40px, -40px, 0);
+  transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 120ms ease;
+  opacity: 0;
+}
+[data-tabworks-replay-cursor] .tw-replay-cursor-tip {
+  width: 0;
+  height: 0;
+  border-left: 13px solid #2563eb;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  filter: drop-shadow(0 3px 8px rgba(15, 23, 42, .22));
+  transform: rotate(45deg);
+  transform-origin: 2px 8px;
+}
+[data-tabworks-replay-cursor] .tw-replay-cursor-ring {
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(37, 99, 235, .35);
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(.6);
+}
+[data-tabworks-replay-cursor].click .tw-replay-cursor-ring {
+  animation: twReplayCursorPulse 260ms ease-out;
+}
+@keyframes twReplayCursorPulse {
+  0% { opacity: .9; transform: scale(.45); }
+  100% { opacity: 0; transform: scale(1.4); }
+}`;
+    document.documentElement.appendChild(style);
+    document.documentElement.appendChild(replayCursor);
+    return replayCursor;
+  }
+
+  async function moveReplayCursor(point, options = {}) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    const cursor = ensureReplayCursor();
+    const from = replayCursorPoint || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const duration = Math.max(120, Math.min(480, distance * 1.2));
+    cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
+    cursor.style.opacity = "1";
+    cursor.classList.remove("click");
+    cursor.style.transform = `translate3d(${Math.round(point.x)}px, ${Math.round(point.y)}px, 0)`;
+    replayCursorPoint = point;
+    await wait(duration);
+    if (options.click) {
+      cursor.classList.add("click");
+      await wait(220);
+      cursor.classList.remove("click");
+    }
   }
 
   function setNativeValue(el, value) {
@@ -554,21 +677,24 @@
 
   async function replayPointerGesture(event, type) {
     const selector = selectorForEvent(event);
-    const el = selector ? document.querySelector(selector) : null;
+    const el = findEventElement(event);
     if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
     el.scrollIntoView({ block: "center", inline: "center" });
     await wait(80);
     const start = centerOf(el);
     if (type === "long-press") {
+      await moveReplayCursor(start);
       dispatchPointerLike(el, "pointerdown", start, { pointerType: event.pointerType });
       await wait(Math.max(120, Math.min(Number(event.durationMs || 700), 1500)));
       dispatchPointerLike(el, "pointerup", start, { buttons: 0, pointerType: event.pointerType });
+      await moveReplayCursor(start, { click: true });
       return { ok: true, kind: event.kind, selector };
     }
     const end = {
       x: Math.round(start.x + Number(event.deltaX || 0)),
       y: Math.round(start.y + Number(event.deltaY || 0)),
     };
+    await moveReplayCursor(start);
     dispatchPointerLike(el, "pointerdown", start, { pointerType: event.pointerType });
     const steps = 8;
     for (let i = 1; i <= steps; i += 1) {
@@ -580,6 +706,7 @@
       dispatchPointerLike(document.elementFromPoint(current.x, current.y) || el, "pointermove", current, {
         pointerType: event.pointerType,
       });
+      await moveReplayCursor(current);
     }
     dispatchPointerLike(document.elementFromPoint(end.x, end.y) || el, "pointerup", end, {
       buttons: 0,
@@ -591,21 +718,23 @@
   async function replayEvent(event) {
     if (event.kind === "click") {
       const selector = selectorForEvent(event);
-      const el = selector ? document.querySelector(selector) : null;
+      const el = findEventElement(event);
       if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
       el.scrollIntoView({ block: "center", inline: "center" });
       await wait(80);
+      await moveReplayCursor(centerOf(el), { click: true });
       el.click();
       return { ok: true, kind: event.kind, selector };
     }
 
     if (event.kind === "double-click" || event.kind === "context-menu") {
       const selector = selectorForEvent(event);
-      const el = selector ? document.querySelector(selector) : null;
+      const el = findEventElement(event);
       if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
       el.scrollIntoView({ block: "center", inline: "center" });
       await wait(80);
       const point = centerOf(el);
+      await moveReplayCursor(point, { click: true });
       const type = event.kind === "double-click" ? "dblclick" : "contextmenu";
       el.dispatchEvent(new MouseEvent(type, {
         bubbles: true,
@@ -639,9 +768,11 @@
 
     if (event.kind === "input") {
       const selector = selectorForEvent(event);
-      const el = selector ? document.querySelector(selector) : null;
+      const el = findEventElement(event);
       if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
       el.scrollIntoView({ block: "center", inline: "center" });
+      await wait(80);
+      await moveReplayCursor(centerOf(el), { click: true });
       if (typeof el.focus === "function") el.focus();
       if (el instanceof HTMLSelectElement && Array.isArray(event.value)) {
         for (const option of el.options) {
@@ -661,8 +792,11 @@
 
     if (event.kind === "submit") {
       const selector = selectorForEvent(event);
-      const el = selector ? document.querySelector(selector) : null;
+      const el = findEventElement(event);
       if (!el) return { ok: false, kind: event.kind, selector, error: "表单未找到" };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      await wait(80);
+      await moveReplayCursor(centerOf(el), { click: true });
       if (typeof el.requestSubmit === "function") el.requestSubmit();
       else el.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       return { ok: true, kind: event.kind, selector };

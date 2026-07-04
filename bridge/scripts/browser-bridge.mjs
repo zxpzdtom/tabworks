@@ -1200,8 +1200,17 @@ const httpServer = http.createServer(async (req, res) => {
     // POST /recording/replay — 在当前或指定标签页回放已保存的 UI 录制
     if (req.method === "POST" && url.pathname === "/recording/replay") {
       const body = await parseJson(req);
-      requireField(body.sessionId, "sessionId");
-      const recording = await readRecordingSession(body.sessionId);
+      if (!body.sessionId && !Array.isArray(body.events)) {
+        throw new Error("需要 sessionId 或 events");
+      }
+      const recording = body.sessionId
+        ? await readRecordingSession(body.sessionId)
+        : {
+            sessionId: "inline",
+            title: body.title || "",
+            url: body.url || "",
+            events: body.events || [],
+          };
       const result = await sendToExtension({
         action: "recording",
         op: "replay",
@@ -1214,7 +1223,7 @@ const httpServer = http.createServer(async (req, res) => {
       });
       return respond(res, 200, {
         ok: true,
-        sessionId: body.sessionId,
+        sessionId: recording.sessionId,
         sourceTitle: recording.title,
         sourceUrl: recording.url,
         ...result,
