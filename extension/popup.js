@@ -319,11 +319,33 @@ function selectorForEvent(event) {
 
 function normalizeEvents(events = []) {
   const playable = events.filter((event) =>
-    ["click", "input", "scroll", "submit", "navigation"].includes(event.kind),
+    [
+      "click",
+      "input",
+      "scroll",
+      "submit",
+      "navigation",
+      "long-press",
+      "drag",
+      "double-click",
+      "context-menu",
+      "key",
+    ].includes(event.kind),
   );
   const normalized = [];
   for (const event of playable) {
     const previous = normalized[normalized.length - 1];
+    if (
+      event.kind === "double-click" &&
+      previous?.kind === "click" &&
+      selectorForEvent(previous) === selectorForEvent(event)
+    ) {
+      normalized.pop();
+      const prior = normalized[normalized.length - 1];
+      if (prior?.kind === "click" && selectorForEvent(prior) === selectorForEvent(event)) {
+        normalized.pop();
+      }
+    }
     if (
       event.kind === "input" &&
       previous?.kind === "input" &&
@@ -376,12 +398,22 @@ function buildDownloadedScript(recordingData) {
     const selector = selectorForEvent(event);
     if (event.kind === "click" && selector) {
       lines.push(`  await bridge('/tap', { pageId, selector: ${jsString(selector)}, mode: 'mouse' });`);
+    } else if (event.kind === "long-press" && selector) {
+      lines.push(`  await bridge('/press', { pageId, selector: ${jsString(selector)}, durationMs: ${Math.max(100, Math.round(Number(event.durationMs || 700)))} });`);
+    } else if (event.kind === "drag" && selector) {
+      lines.push(`  await bridge('/drag', { pageId, selector: ${jsString(selector)}, deltaX: ${Math.round(Number(event.deltaX || 0))}, deltaY: ${Math.round(Number(event.deltaY || 0))}, durationMs: ${Math.max(80, Math.round(Number(event.durationMs || 450)))} });`);
     } else if (event.kind === "input" && selector && !event.redacted) {
       lines.push(`  await bridge('/input', { pageId, selector: ${jsString(selector)}, text: ${JSON.stringify(event.value ?? "")} });`);
     } else if (event.kind === "scroll") {
       lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`window.scrollTo(${event.scrollX || 0}, ${event.scrollY || 0})`)} });`);
     } else if (event.kind === "submit" && selector) {
       lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`document.querySelector(${JSON.stringify(selector)})?.requestSubmit?.()`)} });`);
+    } else if (event.kind === "double-click" && selector) {
+      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({ block: 'center', inline: 'center' }); const rect = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 })); return true; })()`)} });`);
+    } else if (event.kind === "context-menu" && selector) {
+      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({ block: 'center', inline: 'center' }); const rect = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 })); return true; })()`)} });`);
+    } else if (event.kind === "key") {
+      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`(() => { const target = document.activeElement || document.body; const init = ${JSON.stringify({ key: event.key, code: event.code, ctrlKey: Boolean(event.ctrlKey), metaKey: Boolean(event.metaKey), altKey: Boolean(event.altKey), shiftKey: Boolean(event.shiftKey) })}; target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })); target.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, ...init })); return true; })()`)} });`);
     } else if (event.kind === "navigation" && event.url) {
       lines.push(`  await bridge('/goto', { pageId, url: ${jsString(event.url)} });`);
     } else {

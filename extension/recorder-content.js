@@ -3,7 +3,11 @@
   let replaying = false;
   let seq = 0;
   let lastScrollTimer = null;
+  let pointerStart = null;
+  let suppressClickUntil = 0;
   const inputTimers = new WeakMap();
+  const DRAG_DISTANCE_PX = 12;
+  const LONG_PRESS_MS = 650;
 
   function now() {
     return new Date().toISOString();
@@ -138,19 +142,157 @@
     send({ kind: "input", trigger, element: meta, value, redacted });
   }
 
+  function eventPoint(event) {
+    return {
+      x: Math.round(event.clientX || 0),
+      y: Math.round(event.clientY || 0),
+    };
+  }
+
+  function targetMetaFromEvent(event) {
+    const target = event.target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") || event.target;
+    return selectorMeta(target);
+  }
+
+  function pointDistance(a, b) {
+    return Math.hypot((b?.x || 0) - (a?.x || 0), (b?.y || 0) - (a?.y || 0));
+  }
+
+  function shouldRecordKey(event) {
+    if (isInputLike(event.target)) return false;
+    if (event.isComposing) return false;
+    if (event.ctrlKey || event.metaKey || event.altKey) return true;
+    return ["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Backspace", "Delete"].includes(event.key);
+  }
+
   document.addEventListener(
     "click",
     (event) => {
       if (!recording || replaying) return;
-      const target = event.target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']");
-      const meta = selectorMeta(target || event.target);
+      if (performance.now() < suppressClickUntil) return;
+      const meta = targetMetaFromEvent(event);
       if (!meta) return;
+      const point = eventPoint(event);
       send({
         kind: "click",
         element: meta,
-        x: Math.round(event.clientX),
-        y: Math.round(event.clientY),
+        x: point.x,
+        y: point.y,
         button: event.button,
+      });
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!recording || replaying || event.button !== 0 || !event.isPrimary) return;
+      const point = eventPoint(event);
+      pointerStart = {
+        pointerId: event.pointerId,
+        pointerType: event.pointerType || "mouse",
+        startedAt: performance.now(),
+        point,
+        lastPoint: point,
+        element: targetMetaFromEvent(event),
+      };
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "pointermove",
+    (event) => {
+      if (!recording || replaying || !pointerStart || event.pointerId !== pointerStart.pointerId) return;
+      pointerStart.lastPoint = eventPoint(event);
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "pointerup",
+    (event) => {
+      if (!recording || replaying || !pointerStart || event.pointerId !== pointerStart.pointerId) return;
+      const endedPoint = eventPoint(event);
+      const distance = pointDistance(pointerStart.point, endedPoint);
+      const durationMs = Math.round(performance.now() - pointerStart.startedAt);
+      const base = {
+        element: pointerStart.element,
+        pointerType: pointerStart.pointerType,
+        durationMs,
+      };
+      if (distance >= DRAG_DISTANCE_PX) {
+        suppressClickUntil = performance.now() + 350;
+        send({
+          kind: "drag",
+          ...base,
+          targetElement: targetMetaFromEvent(event),
+          startX: pointerStart.point.x,
+          startY: pointerStart.point.y,
+          endX: endedPoint.x,
+          endY: endedPoint.y,
+          deltaX: endedPoint.x - pointerStart.point.x,
+          deltaY: endedPoint.y - pointerStart.point.y,
+        });
+      } else if (durationMs >= LONG_PRESS_MS) {
+        suppressClickUntil = performance.now() + 350;
+        send({
+          kind: "long-press",
+          ...base,
+          x: endedPoint.x,
+          y: endedPoint.y,
+        });
+      }
+      pointerStart = null;
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "pointercancel",
+    () => {
+      pointerStart = null;
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "contextmenu",
+    (event) => {
+      if (!recording || replaying) return;
+      const meta = targetMetaFromEvent(event);
+      if (!meta) return;
+      const point = eventPoint(event);
+      send({ kind: "context-menu", element: meta, x: point.x, y: point.y });
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "dblclick",
+    (event) => {
+      if (!recording || replaying) return;
+      const meta = targetMetaFromEvent(event);
+      if (!meta) return;
+      const point = eventPoint(event);
+      send({ kind: "double-click", element: meta, x: point.x, y: point.y });
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!recording || replaying || !shouldRecordKey(event)) return;
+      send({
+        kind: "key",
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
       });
     },
     true,
@@ -251,6 +393,68 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function dispatchPointerLike(el, type, point, options = {}) {
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: point.x,
+      clientY: point.y,
+      button: options.button ?? 0,
+      buttons: options.buttons ?? 1,
+      pointerId: options.pointerId ?? 1,
+      pointerType: options.pointerType || "mouse",
+      isPrimary: true,
+    };
+    if (typeof PointerEvent === "function") el.dispatchEvent(new PointerEvent(type, init));
+    const mouseType = type.replace(/^pointer/, "mouse");
+    if (mouseType !== type) el.dispatchEvent(new MouseEvent(mouseType, init));
+  }
+
+  function centerOf(el) {
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    };
+  }
+
+  async function replayPointerGesture(event, type) {
+    const selector = selectorForEvent(event);
+    const el = selector ? document.querySelector(selector) : null;
+    if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
+    el.scrollIntoView({ block: "center", inline: "center" });
+    await wait(80);
+    const start = centerOf(el);
+    if (type === "long-press") {
+      dispatchPointerLike(el, "pointerdown", start, { pointerType: event.pointerType });
+      await wait(Math.max(120, Math.min(Number(event.durationMs || 700), 1500)));
+      dispatchPointerLike(el, "pointerup", start, { buttons: 0, pointerType: event.pointerType });
+      return { ok: true, kind: event.kind, selector };
+    }
+    const end = {
+      x: Math.round(start.x + Number(event.deltaX || 0)),
+      y: Math.round(start.y + Number(event.deltaY || 0)),
+    };
+    dispatchPointerLike(el, "pointerdown", start, { pointerType: event.pointerType });
+    const steps = 8;
+    for (let i = 1; i <= steps; i += 1) {
+      await wait(Math.max(12, Math.min(Number(event.durationMs || 240) / steps, 80)));
+      const current = {
+        x: Math.round(start.x + ((end.x - start.x) * i) / steps),
+        y: Math.round(start.y + ((end.y - start.y) * i) / steps),
+      };
+      dispatchPointerLike(document.elementFromPoint(current.x, current.y) || el, "pointermove", current, {
+        pointerType: event.pointerType,
+      });
+    }
+    dispatchPointerLike(document.elementFromPoint(end.x, end.y) || el, "pointerup", end, {
+      buttons: 0,
+      pointerType: event.pointerType,
+    });
+    return { ok: true, kind: event.kind, selector };
+  }
+
   async function replayEvent(event) {
     if (event.kind === "click") {
       const selector = selectorForEvent(event);
@@ -260,6 +464,44 @@
       await wait(80);
       el.click();
       return { ok: true, kind: event.kind, selector };
+    }
+
+    if (event.kind === "double-click" || event.kind === "context-menu") {
+      const selector = selectorForEvent(event);
+      const el = selector ? document.querySelector(selector) : null;
+      if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      await wait(80);
+      const point = centerOf(el);
+      const type = event.kind === "double-click" ? "dblclick" : "contextmenu";
+      el.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: point.x,
+        clientY: point.y,
+        button: event.kind === "context-menu" ? 2 : 0,
+      }));
+      return { ok: true, kind: event.kind, selector };
+    }
+
+    if (event.kind === "long-press") return replayPointerGesture(event, "long-press");
+    if (event.kind === "drag") return replayPointerGesture(event, "drag");
+
+    if (event.kind === "key") {
+      const target = document.activeElement || document.body;
+      const init = {
+        bubbles: true,
+        cancelable: true,
+        key: event.key,
+        code: event.code,
+        ctrlKey: Boolean(event.ctrlKey),
+        metaKey: Boolean(event.metaKey),
+        altKey: Boolean(event.altKey),
+        shiftKey: Boolean(event.shiftKey),
+      };
+      target.dispatchEvent(new KeyboardEvent("keydown", init));
+      target.dispatchEvent(new KeyboardEvent("keyup", init));
+      return { ok: true, kind: event.kind };
     }
 
     if (event.kind === "input") {
@@ -298,11 +540,22 @@
 
   function normalizePlayableEvents(events) {
     const playable = events.filter((event) =>
-      ["click", "input", "scroll", "submit"].includes(event.kind),
+      ["click", "input", "scroll", "submit", "long-press", "drag", "double-click", "context-menu", "key"].includes(event.kind),
     );
     const normalized = [];
     for (const event of playable) {
       const previous = normalized[normalized.length - 1];
+      if (
+        event.kind === "double-click" &&
+        previous?.kind === "click" &&
+        selectorForEvent(previous) === selectorForEvent(event)
+      ) {
+        normalized.pop();
+        const prior = normalized[normalized.length - 1];
+        if (prior?.kind === "click" && selectorForEvent(prior) === selectorForEvent(event)) {
+          normalized.pop();
+        }
+      }
       if (
         event.kind === "input" &&
         previous?.kind === "input" &&

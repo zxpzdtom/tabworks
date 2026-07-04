@@ -46,6 +46,8 @@ const BRIDGE_ROUTES = new Set([
   "/inspect",
   "/run-js",
   "/tap",
+  "/press",
+  "/drag",
   "/input",
   "/move",
   "/capture",
@@ -156,6 +158,35 @@ function requireField(value, fieldName) {
   if (value === undefined || value === null || value === "") {
     throw new Error(`${fieldName} 字段不能为空`);
   }
+}
+
+function requireFiniteNumber(value, fieldName) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${fieldName} 字段必须是数字`);
+  return number;
+}
+
+async function elementCenter(tabId, selector, workspace) {
+  requireField(selector, "selector");
+  const result = await sendToExtension({
+    action: "exec",
+    tabId,
+    code: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { error: 'not found' };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        tag: el.tagName,
+        text: (el.textContent || '').trim().slice(0, 200),
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2
+      };
+    })()`,
+    workspace,
+  });
+  if (!result || result.error) throw new Error("元素未找到");
+  return result;
 }
 
 function isSubPath(baseDir, targetPath) {
@@ -810,6 +841,65 @@ const httpServer = http.createServer(async (req, res) => {
       }
 
       return respond(res, 200, { ok: true, mode, ...elementMeta });
+    }
+
+    // POST /press — 长按元素
+    if (req.method === "POST" && url.pathname === "/press") {
+      const body = await parseJson(req);
+      const tabId = body.pageId ?? body.tabId;
+      requireField(tabId, "pageId");
+      const point = body.selector
+        ? await elementCenter(tabId, body.selector, body.workspace)
+        : {
+            x: requireFiniteNumber(body.x, "x"),
+            y: requireFiniteNumber(body.y, "y"),
+          };
+      const result = await sendToExtension({
+        action: "mouse",
+        tabId,
+        op: "press",
+        x: point.x,
+        y: point.y,
+        durationMs: body.durationMs,
+        workspace: body.workspace,
+      });
+      return respond(res, 200, { ok: true, ...point, result });
+    }
+
+    // POST /drag — 拖拽元素或坐标
+    if (req.method === "POST" && url.pathname === "/drag") {
+      const body = await parseJson(req);
+      const tabId = body.pageId ?? body.tabId;
+      requireField(tabId, "pageId");
+      const start = body.selector || body.fromSelector
+        ? await elementCenter(tabId, body.selector || body.fromSelector, body.workspace)
+        : {
+            x: requireFiniteNumber(body.fromX ?? body.x, "fromX"),
+            y: requireFiniteNumber(body.fromY ?? body.y, "fromY"),
+          };
+      const end = body.toSelector
+        ? await elementCenter(tabId, body.toSelector, body.workspace)
+        : body.toX !== undefined || body.toY !== undefined
+          ? {
+              x: requireFiniteNumber(body.toX, "toX"),
+              y: requireFiniteNumber(body.toY, "toY"),
+            }
+          : {
+              x: start.x + requireFiniteNumber(body.deltaX, "deltaX"),
+              y: start.y + requireFiniteNumber(body.deltaY, "deltaY"),
+            };
+      const result = await sendToExtension({
+        action: "mouse",
+        tabId,
+        op: "drag",
+        fromX: start.x,
+        fromY: start.y,
+        toX: end.x,
+        toY: end.y,
+        durationMs: body.durationMs,
+        workspace: body.workspace,
+      });
+      return respond(res, 200, { ok: true, start, end, result });
     }
 
     // POST /input — 向输入框写入文字

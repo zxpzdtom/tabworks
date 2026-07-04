@@ -326,6 +326,10 @@ async function cdpEvaluate(tabId, expression) {
   return result.result?.value;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function cdpMouseClick(tabId, x, y) {
   await ensureAttached(tabId);
   const point = { x: Number(x), y: Number(y) };
@@ -353,6 +357,90 @@ async function cdpMouseClick(tabId, x, y) {
     clickCount: 1,
   });
   return { clicked: true, ...point };
+}
+
+async function cdpMousePress(tabId, x, y, durationMs = 700) {
+  await ensureAttached(tabId);
+  const point = { x: Number(x), y: Number(y) };
+  const holdMs = Math.max(100, Math.min(Number(durationMs) || 700, 5000));
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    throw new Error("鼠标坐标无效");
+  }
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+    button: "none",
+  });
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await sleep(holdMs);
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  return { pressed: true, durationMs: holdMs, ...point };
+}
+
+async function cdpMouseDrag(tabId, fromX, fromY, toX, toY, durationMs = 450) {
+  await ensureAttached(tabId);
+  const start = { x: Number(fromX), y: Number(fromY) };
+  const end = { x: Number(toX), y: Number(toY) };
+  const dragMs = Math.max(80, Math.min(Number(durationMs) || 450, 8000));
+  if (
+    !Number.isFinite(start.x) ||
+    !Number.isFinite(start.y) ||
+    !Number.isFinite(end.x) ||
+    !Number.isFinite(end.y)
+  ) {
+    throw new Error("拖拽坐标无效");
+  }
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: start.x,
+    y: start.y,
+    button: "none",
+  });
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: start.x,
+    y: start.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+
+  const steps = Math.max(4, Math.min(40, Math.round(dragMs / 24)));
+  for (let i = 1; i <= steps; i += 1) {
+    await sleep(dragMs / steps);
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: start.x + ((end.x - start.x) * i) / steps,
+      y: start.y + ((end.y - start.y) * i) / steps,
+      button: "left",
+      buttons: 1,
+    });
+  }
+
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: end.x,
+    y: end.y,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  return { dragged: true, fromX: start.x, fromY: start.y, toX: end.x, toY: end.y, durationMs: dragMs };
 }
 
 async function cdpDetach(tabId) {
@@ -693,12 +781,24 @@ async function handleExec(cmd, workspace) {
 }
 
 async function handleMouse(cmd, workspace) {
-  if (cmd.op !== "click") {
+  if (!["click", "press", "drag"].includes(cmd.op)) {
     return { id: cmd.id, ok: false, error: `未知 mouse op: ${cmd.op}` };
   }
   const tabId = await resolveTabId(cmd.tabId, workspace);
   try {
-    const data = await cdpMouseClick(tabId, cmd.x, cmd.y);
+    const data =
+      cmd.op === "click"
+        ? await cdpMouseClick(tabId, cmd.x, cmd.y)
+        : cmd.op === "press"
+          ? await cdpMousePress(tabId, cmd.x, cmd.y, cmd.durationMs)
+          : await cdpMouseDrag(
+              tabId,
+              cmd.fromX,
+              cmd.fromY,
+              cmd.toX,
+              cmd.toY,
+              cmd.durationMs,
+            );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return {

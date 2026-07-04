@@ -50,6 +50,22 @@ const API_REFERENCE = [
     dependency: "页面已打开",
   },
   {
+    code: "PRS",
+    capability: "长按元素",
+    method: "POST",
+    endpoint: "/press",
+    purpose: "按住 selector 或坐标一段时间后释放，用于录制脚本里的长按手势。",
+    dependency: "debugger 权限",
+  },
+  {
+    code: "DRG",
+    capability: "拖拽元素",
+    method: "POST",
+    endpoint: "/drag",
+    purpose: "从 selector、from 坐标或目标元素开始拖到指定坐标/元素，也支持 deltaX/deltaY。",
+    dependency: "debugger 权限",
+  },
+  {
     code: "INP",
     capability: "输入文本",
     method: "POST",
@@ -94,7 +110,7 @@ const API_REFERENCE = [
     capability: "开始 UI 录制",
     method: "POST",
     endpoint: "/recording/start",
-    purpose: "开始记录当前或指定标签页中的 click/input/change/submit/scroll/navigation 事件。",
+    purpose: "开始记录当前或指定标签页中的点击、输入、滚动、长按、拖拽、右键、双击、快捷键和导航事件。",
     dependency: "扩展内容脚本已注入",
   },
   {
@@ -118,7 +134,7 @@ const API_REFERENCE = [
     capability: "回放 UI 录制",
     method: "POST",
     endpoint: "/recording/replay",
-    purpose: "读取已保存的 session，在当前或指定标签页重复执行 click/input/scroll/submit 事件。",
+    purpose: "读取已保存的 session，在当前或指定标签页重复执行可回放的 UI 操作事件。",
     dependency: "已有录制 session，目标页面处于可回放状态",
   },
 ];
@@ -152,6 +168,10 @@ function sampleBodyForEndpoint(endpoint) {
   if (endpoint === "/run-js") return { pageId: 123, script: "document.title" };
   if (endpoint === "/tap")
     return { pageId: 123, selector: "button[type='submit']", mode: "mouse" };
+  if (endpoint === "/press")
+    return { pageId: 123, selector: "[data-testid='hold']", durationMs: 700 };
+  if (endpoint === "/drag")
+    return { pageId: 123, selector: "[data-testid='slider']", deltaX: 120, deltaY: 0 };
   if (endpoint === "/input")
     return { pageId: 123, selector: "input[name='q']", text: "hello" };
   if (endpoint === "/request")
