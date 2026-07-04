@@ -310,11 +310,18 @@ function jsString(value) {
 }
 
 function selectorForEvent(event) {
+  const selectors = event?.element?.selectors || [];
   return (
+    selectors.find((item) => item.unique)?.selector ||
     event?.element?.preferredSelector ||
-    event?.element?.selectors?.[0]?.selector ||
+    selectors.find((item) => item.selector)?.selector ||
     ""
   );
+}
+
+function numberLiteral(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : fallback;
 }
 
 function normalizeEvents(events = []) {
@@ -401,7 +408,20 @@ function buildDownloadedScript(recordingData) {
     } else if (event.kind === "long-press" && selector) {
       lines.push(`  await bridge('/press', { pageId, selector: ${jsString(selector)}, durationMs: ${Math.max(100, Math.round(Number(event.durationMs || 700)))} });`);
     } else if (event.kind === "drag" && selector) {
-      lines.push(`  await bridge('/drag', { pageId, selector: ${jsString(selector)}, deltaX: ${Math.round(Number(event.deltaX || 0))}, deltaY: ${Math.round(Number(event.deltaY || 0))}, durationMs: ${Math.max(80, Math.round(Number(event.durationMs || 450)))} });`);
+      const body = [
+        "pageId",
+        `selector: ${jsString(selector)}`,
+        `deltaX: ${numberLiteral(event.deltaX, 0)}`,
+        `deltaY: ${numberLiteral(event.deltaY, 0)}`,
+        `durationMs: ${Math.max(80, Math.round(Number(event.durationMs || 450)))}`,
+      ];
+      if (Number.isFinite(Number(event.startOffsetX))) {
+        body.push(`offsetX: ${numberLiteral(event.startOffsetX, 0)}`);
+      }
+      if (Number.isFinite(Number(event.startOffsetY))) {
+        body.push(`offsetY: ${numberLiteral(event.startOffsetY, 0)}`);
+      }
+      lines.push(`  await bridge('/drag', { ${body.join(", ")} });`);
     } else if (event.kind === "input" && selector && !event.redacted) {
       lines.push(`  await bridge('/input', { pageId, selector: ${jsString(selector)}, text: ${JSON.stringify(event.value ?? "")} });`);
     } else if (event.kind === "scroll") {
@@ -442,11 +462,35 @@ function downloadTextFile(filename, text) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function filenameSlug(value) {
+  const normalized = String(value || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/[\\/:*?"<>|#%{}$!'@+`=&\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return normalized || "untitled-page";
+}
+
+function filenameTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    "-",
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("");
+}
+
 recorderDownloadBtn.addEventListener("click", () => {
   if (!lastRecordingResult) return;
   const script = buildDownloadedScript(lastRecordingResult);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  downloadTextFile(`tabworks-recording-${stamp}.mjs`, script);
+  const title = filenameSlug(lastRecordingResult.title || lastRecordingResult.url);
+  downloadTextFile(`tabworks-${title}-ui-recording-${filenameTimestamp()}.mjs`, script);
   const originalText = recorderDownloadBtn.textContent;
   recorderDownloadBtn.textContent = "已下载";
   setTimeout(() => {

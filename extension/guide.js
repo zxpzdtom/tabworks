@@ -222,7 +222,7 @@ function buildBridgeReference() {
 - CLI 不是使用前提；浏览器扩展无法判断系统里是否安装了 CLI。
 - 扩展只能检测 localhost:9527 的 bridge/log 服务是否在线。
 - 除 GET /status 外，接口需要本地服务在线、扩展已连接，并携带请求头 X-TabWorks-Bridge: 1。
-- 扩展 popup 录制默认保存在浏览器 storage；用户点击下载脚本时才导出 tabworks-recording-*.mjs。
+- 扩展 popup 录制默认保存在浏览器 storage；用户点击下载脚本时才导出 tabworks-页面标题-ui-recording-时间.mjs。
 - HTTP /recording/* 接口保留给调试和兼容使用。
 - 导出的流程脚本可以使用 await page.sleep(ms) 表达点击后的加载、动画或接口等待。
 

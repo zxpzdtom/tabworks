@@ -166,8 +166,16 @@ function requireFiniteNumber(value, fieldName) {
   return number;
 }
 
-async function elementCenter(tabId, selector, workspace) {
+async function elementPoint(tabId, selector, workspace, options = {}) {
   requireField(selector, "selector");
+  const offsetX =
+    options.offsetX === undefined || options.offsetX === null
+      ? null
+      : requireFiniteNumber(options.offsetX, "offsetX");
+  const offsetY =
+    options.offsetY === undefined || options.offsetY === null
+      ? null
+      : requireFiniteNumber(options.offsetY, "offsetY");
   const result = await sendToExtension({
     action: "exec",
     tabId,
@@ -176,17 +184,25 @@ async function elementCenter(tabId, selector, workspace) {
       if (!el) return { error: 'not found' };
       el.scrollIntoView({ block: 'center', inline: 'center' });
       const rect = el.getBoundingClientRect();
+      const offsetX = ${JSON.stringify(offsetX)};
+      const offsetY = ${JSON.stringify(offsetY)};
       return {
         tag: el.tagName,
         text: (el.textContent || '').trim().slice(0, 200),
-        x: rect.x + rect.width / 2,
-        y: rect.y + rect.height / 2
+        x: rect.x + (offsetX == null ? rect.width / 2 : offsetX),
+        y: rect.y + (offsetY == null ? rect.height / 2 : offsetY),
+        width: rect.width,
+        height: rect.height
       };
     })()`,
     workspace,
   });
   if (!result || result.error) throw new Error("元素未找到");
   return result;
+}
+
+async function elementCenter(tabId, selector, workspace) {
+  return elementPoint(tabId, selector, workspace);
 }
 
 function isSubPath(baseDir, targetPath) {
@@ -849,7 +865,10 @@ const httpServer = http.createServer(async (req, res) => {
       const tabId = body.pageId ?? body.tabId;
       requireField(tabId, "pageId");
       const point = body.selector
-        ? await elementCenter(tabId, body.selector, body.workspace)
+        ? await elementPoint(tabId, body.selector, body.workspace, {
+            offsetX: body.offsetX,
+            offsetY: body.offsetY,
+          })
         : {
             x: requireFiniteNumber(body.x, "x"),
             y: requireFiniteNumber(body.y, "y"),
@@ -872,7 +891,10 @@ const httpServer = http.createServer(async (req, res) => {
       const tabId = body.pageId ?? body.tabId;
       requireField(tabId, "pageId");
       const start = body.selector || body.fromSelector
-        ? await elementCenter(tabId, body.selector || body.fromSelector, body.workspace)
+        ? await elementPoint(tabId, body.selector || body.fromSelector, body.workspace, {
+            offsetX: body.offsetX ?? body.fromOffsetX,
+            offsetY: body.offsetY ?? body.fromOffsetY,
+          })
         : {
             x: requireFiniteNumber(body.fromX ?? body.x, "fromX"),
             y: requireFiniteNumber(body.fromY ?? body.y, "fromY"),

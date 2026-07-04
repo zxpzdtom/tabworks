@@ -33,10 +33,10 @@
     return null;
   }
 
-  function cssPath(el) {
+  function cssPath(el, maxParts = 5) {
     const parts = [];
     let current = el;
-    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < maxParts) {
       const tag = current.tagName.toLowerCase();
       if (current.id) {
         parts.unshift(`${tag}#${cssEscape(current.id)}`);
@@ -63,6 +63,25 @@
     return parts.join(" > ");
   }
 
+  function selectorCount(selector) {
+    try {
+      return document.querySelectorAll(selector).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  function addCandidate(candidates, kind, selector) {
+    if (!selector) return;
+    const count = selectorCount(selector);
+    candidates.push({
+      kind,
+      selector,
+      unique: count === 1,
+      count,
+    });
+  }
+
   function selectorMeta(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return null;
     const candidates = [];
@@ -73,11 +92,18 @@
     const role = elementRole(el);
     const text = textOf(el).slice(0, 120);
 
-    if (testId) candidates.push({ kind: "testid", selector: `[data-testid="${cssEscape(testId)}"]` });
-    if (id) candidates.push({ kind: "id", selector: `#${cssEscape(id)}` });
-    if (ariaLabel) candidates.push({ kind: "aria", selector: `[aria-label="${cssEscape(ariaLabel)}"]` });
-    if (name) candidates.push({ kind: "name", selector: `[name="${cssEscape(name)}"]` });
-    candidates.push({ kind: "css", selector: cssPath(el) });
+    if (testId) addCandidate(candidates, "testid", `[data-testid="${cssEscape(testId)}"]`);
+    if (id) addCandidate(candidates, "id", `#${cssEscape(id)}`);
+    if (ariaLabel) addCandidate(candidates, "aria", `[aria-label="${cssEscape(ariaLabel)}"]`);
+    if (name) addCandidate(candidates, "name", `[name="${cssEscape(name)}"]`);
+    addCandidate(candidates, "css", cssPath(el));
+    addCandidate(candidates, "css-full", cssPath(el, 12));
+
+    const preferred =
+      candidates.find((item) => item.unique)?.selector ||
+      candidates.find((item) => item.kind === "css-full")?.selector ||
+      candidates.find((item) => item.selector)?.selector ||
+      "";
 
     return {
       tag: el.tagName,
@@ -88,7 +114,7 @@
       ariaLabel,
       name,
       selectors: candidates.filter((item) => item.selector),
-      preferredSelector: candidates.find((item) => item.selector)?.selector || "",
+      preferredSelector: preferred,
     };
   }
 
@@ -149,9 +175,23 @@
     };
   }
 
+  function targetElementFromEvent(event) {
+    return event.target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") || event.target;
+  }
+
   function targetMetaFromEvent(event) {
-    const target = event.target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") || event.target;
-    return selectorMeta(target);
+    return selectorMeta(targetElementFromEvent(event));
+  }
+
+  function localPointForEvent(event, el) {
+    if (!el?.getBoundingClientRect) return null;
+    const rect = el.getBoundingClientRect();
+    return {
+      offsetX: Math.round((event.clientX - rect.left) * 100) / 100,
+      offsetY: Math.round((event.clientY - rect.top) * 100) / 100,
+      width: Math.round(rect.width * 100) / 100,
+      height: Math.round(rect.height * 100) / 100,
+    };
   }
 
   function pointDistance(a, b) {
@@ -189,13 +229,15 @@
     (event) => {
       if (!recording || replaying || event.button !== 0 || !event.isPrimary) return;
       const point = eventPoint(event);
+      const target = targetElementFromEvent(event);
       pointerStart = {
         pointerId: event.pointerId,
         pointerType: event.pointerType || "mouse",
         startedAt: performance.now(),
         point,
         lastPoint: point,
-        element: targetMetaFromEvent(event),
+        element: selectorMeta(target),
+        localPoint: localPointForEvent(event, target),
       };
     },
     true,
@@ -232,6 +274,10 @@
           startY: pointerStart.point.y,
           endX: endedPoint.x,
           endY: endedPoint.y,
+          startOffsetX: pointerStart.localPoint?.offsetX,
+          startOffsetY: pointerStart.localPoint?.offsetY,
+          elementWidth: pointerStart.localPoint?.width,
+          elementHeight: pointerStart.localPoint?.height,
           deltaX: endedPoint.x - pointerStart.point.x,
           deltaY: endedPoint.y - pointerStart.point.y,
         });
