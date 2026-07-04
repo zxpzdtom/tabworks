@@ -630,8 +630,9 @@
     replayCursor = document.createElement("div");
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
     replayCursor.innerHTML = `
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 24 24" aria-hidden="true">
-        <path class="tw-replay-cursor-fill" d="M4.8 3.4 18.9 14.2l-6.1 1.1 3.5 5.1-2.4 1.5-3.4-5.2-4.1 4.1L4.8 3.4Z" />
+      <div class="tw-replay-cursor-glow"></div>
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 28 28" aria-hidden="true">
+        <path class="tw-replay-cursor-fill" d="M5.4 3.8 21.6 15.7l-7.1 1.3 4 5.9-3.2 2-3.9-6-4.7 4.8L5.4 3.8Z" />
       </svg>
       <div class="tw-replay-cursor-ring"></div>
     `;
@@ -641,34 +642,48 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
   transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 120ms ease;
   opacity: 0;
 }
+[data-tabworks-replay-cursor] .tw-replay-cursor-glow {
+  position: absolute;
+  left: -15px;
+  top: -12px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(64, 156, 255, .42) 0%, rgba(64, 156, 255, .22) 36%, rgba(64, 156, 255, 0) 70%);
+  filter: blur(2px);
+}
 [data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
+  position: relative;
   display: block;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   overflow: visible;
-  filter: drop-shadow(0 3px 5px rgba(15, 23, 42, .18));
+  filter:
+    drop-shadow(0 1px 1px rgba(15, 23, 42, .34))
+    drop-shadow(0 0 7px rgba(74, 158, 255, .62));
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-fill {
-  fill: #fff;
-  stroke: rgba(15, 23, 42, .78);
-  stroke-width: 1.1;
+  fill: #05070a;
+  stroke: #fff;
+  stroke-width: 2.8;
   stroke-linejoin: round;
+  paint-order: stroke fill;
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-ring {
   position: absolute;
-  left: -5px;
-  top: -5px;
-  width: 20px;
-  height: 20px;
-  border: 1.5px solid rgba(15, 23, 42, .20);
+  left: -7px;
+  top: -7px;
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(64, 156, 255, .58);
   border-radius: 50%;
   opacity: 0;
   transform: scale(.6);
@@ -694,7 +709,7 @@
     cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
     cursor.style.opacity = "1";
     cursor.classList.remove("click");
-    cursor.style.transform = `translate3d(${Math.round(point.x - 4)}px, ${Math.round(point.y - 3)}px, 0)`;
+    cursor.style.transform = `translate3d(${Math.round(point.x - 5)}px, ${Math.round(point.y - 4)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
     if (options.click) {
