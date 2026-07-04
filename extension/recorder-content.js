@@ -1,5 +1,5 @@
 (() => {
-  const RECORDER_SCRIPT_VERSION = 5;
+  const RECORDER_SCRIPT_VERSION = 6;
   if (globalThis.__tabworksRecorderVersion === RECORDER_SCRIPT_VERSION) return;
   globalThis.__tabworksRecorderVersion = RECORDER_SCRIPT_VERSION;
   globalThis.__tabworksRecorderLoaded = true;
@@ -741,6 +741,14 @@
     }
   }
 
+  function hideReplayCursor() {
+    if (!replayCursor) return;
+    replayCursor.style.opacity = "0";
+    replayCursor.style.transform = "translate3d(-40px, -40px, 0)";
+    replayCursor.classList.remove("click");
+    replayCursorPoint = null;
+  }
+
   function showToast(message, kind = "success") {
     const existing = document.querySelector("[data-tabworks-toast]");
     if (existing) existing.remove();
@@ -1035,6 +1043,7 @@
       }
     } finally {
       replaying = false;
+      hideReplayCursor();
     }
 
     return {

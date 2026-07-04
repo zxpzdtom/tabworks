@@ -719,6 +719,17 @@ async function getTabFrames(tabId) {
 }
 
 async function injectRecorderIntoFrames(tabId, targetFrameId) {
+  if (!Number.isInteger(targetFrameId)) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ["recorder-content.js"],
+      });
+      return;
+    } catch {
+      /* allFrames 在部分受限页面会失败，继续按 frameId 逐个注入 */
+    }
+  }
   const frameIds =
     Number.isInteger(targetFrameId)
       ? [targetFrameId]
@@ -816,6 +827,23 @@ async function collectFrameContexts(tabId) {
   }));
 }
 
+async function startRecordingInFrames(tabId, sessionId, attempts = 6) {
+  let latest = null;
+  for (let i = 0; i < attempts; i += 1) {
+    await injectRecorderIntoFrames(tabId);
+    latest = await sendMessageToAllFrames(tabId, {
+      type: "tabworks-recording-start",
+      sessionId,
+    });
+    const frames = await getTabFrames(tabId);
+    const expectedFrameCount = frames.length;
+    const connectedFrameCount = latest.frames.filter((frame) => frame.ok).length;
+    if (connectedFrameCount >= expectedFrameCount) break;
+    await sleep(300);
+  }
+  return latest;
+}
+
 function chooseReplayFrameId(frameEvents, frameContexts) {
   const sample =
     frameEvents.find((event) => frameContextFromEvent(event)) ||
@@ -865,6 +893,92 @@ function chooseReplayFrameId(frameEvents, frameContexts) {
   if (sameId) return sameId.frameId;
   if (candidates.length === 1) return candidates[0].frameId;
   return scopedCandidates[0]?.frameId ?? recordedFrameId;
+}
+
+function hasReplayFrameMatch(frameEvents, frameContexts) {
+  const sample =
+    frameEvents.find((event) => frameContextFromEvent(event)) ||
+    frameEvents.find((event) => Number.isInteger(event.frameId)) ||
+    frameEvents[0] ||
+    {};
+  const recordedFrameId = Number.isInteger(sample.frameId) ? sample.frameId : 0;
+  const recordedContext = frameContextFromEvent(sample);
+
+  if (recordedContext?.isTop || (!recordedContext && recordedFrameId === 0)) {
+    return frameContexts.some((frame) => frame.ok && frame.frameId === 0);
+  }
+
+  const recordedUrl = normalizeFrameUrl(
+    recordedContext?.url || sample.frameUrl || sample.url,
+  );
+  const candidates = frameContexts.filter((frame) => {
+    if (!frame.ok) return false;
+    if (!recordedUrl) return true;
+    return normalizeFrameUrl(frame.url || frame.frameContext?.url) === recordedUrl;
+  });
+  if (!candidates.length) return false;
+
+  if (recordedContext?.frameSelector) {
+    return candidates.some(
+      (frame) => frame.frameContext?.frameSelector === recordedContext.frameSelector,
+    );
+  }
+  const recordedName = normalizeFrameName(recordedContext?.frameName);
+  if (recordedName) {
+    return candidates.some(
+      (frame) => normalizeFrameName(frame.frameContext?.frameName) === recordedName,
+    );
+  }
+  if (Number.isInteger(recordedContext?.frameIndex)) {
+    return candidates.some(
+      (frame) => frame.frameContext?.frameIndex === recordedContext.frameIndex,
+    );
+  }
+  if (recordedFrameId !== 0) {
+    return candidates.some((frame) => frame.frameId === recordedFrameId);
+  }
+  return candidates.length === 1;
+}
+
+function requiredReplayFrameGroups(grouped) {
+  return [...grouped.values()].filter((frameEvents) =>
+    frameEvents.some((event) => {
+      const context = frameContextFromEvent(event);
+      return (
+        event.inFrame ||
+        context?.isTop === false ||
+        (Number.isInteger(event.frameId) && event.frameId !== 0)
+      );
+    }),
+  );
+}
+
+async function waitForReplayFrames(tabId, grouped, timeoutMs = 15000) {
+  const requiredGroups = requiredReplayFrameGroups(grouped);
+  const waitMs = Math.max(1000, Math.min(Number(timeoutMs) || 15000, 60000));
+  const startedAt = Date.now();
+  let lastContexts = [];
+
+  while (Date.now() - startedAt < waitMs) {
+    await injectRecorderIntoFrames(tabId);
+    try {
+      lastContexts = await collectFrameContexts(tabId);
+      const allReady = requiredGroups.every((frameEvents) =>
+        hasReplayFrameMatch(frameEvents, lastContexts),
+      );
+      if (allReady) return lastContexts;
+    } catch {
+      /* frame 正在加载或还没有 content script，稍后重试 */
+    }
+    await sleep(350);
+  }
+
+  if (!requiredGroups.length && lastContexts.length) return lastContexts;
+  throw new Error(
+    `等待 iframe 接入超时：需要 ${requiredGroups.length} 个 iframe 分组，当前已连接 ${
+      lastContexts.filter((frame) => frame.ok && frame.frameId !== 0).length
+    } 个`,
+  );
 }
 
 function createRecordingSessionId() {
@@ -918,11 +1032,7 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
   recordingTabs.set(targetTabId, item);
   let response;
   try {
-    await injectRecorderIntoFrames(targetTabId);
-    response = await sendMessageToAllFrames(targetTabId, {
-      type: "tabworks-recording-start",
-      sessionId,
-    });
+    response = await startRecordingInFrames(targetTabId, sessionId);
   } catch (err) {
     recordingTabs.delete(targetTabId);
     throw err;
@@ -994,14 +1104,17 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     );
     await injectRecorderIntoFrames(targetTabId);
   }
-  await injectRecorderIntoFrames(targetTabId);
-  const currentFrames = await collectFrameContexts(targetTabId);
   const grouped = new Map();
   for (const event of source) {
     const key = recordedFrameKey(event);
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(event);
   }
+  const currentFrames = await waitForReplayFrames(
+    targetTabId,
+    grouped,
+    options?.frameReadyTimeoutMs,
+  );
 
   const results = [];
   for (const frameEvents of grouped.values()) {
