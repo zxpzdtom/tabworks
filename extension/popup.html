@@ -244,6 +244,21 @@
                 background: #1d56d8;
             }
 
+            .btn.danger {
+                color: #fff;
+                background: var(--red);
+            }
+
+            .btn.danger:hover {
+                background: #ad332d;
+            }
+
+            .btn:disabled {
+                cursor: default;
+                opacity: 0.52;
+                transform: none;
+            }
+
             .btn.small {
                 min-height: 26px;
                 min-width: 48px;
@@ -268,6 +283,89 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+            }
+
+            .recorder {
+                display: grid;
+                gap: 8px;
+                padding: 10px 13px 11px;
+                border-bottom: 1px solid var(--line);
+                background: #fff;
+            }
+
+            .recorder-card {
+                display: grid;
+                gap: 8px;
+                padding: 10px;
+                border-radius: 12px;
+                background: #f8fafc;
+                box-shadow: var(--control-shadow);
+            }
+
+            .recorder-head {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 10px;
+                align-items: center;
+            }
+
+            .recorder-title {
+                display: flex;
+                align-items: center;
+                gap: 7px;
+                min-width: 0;
+            }
+
+            .recorder-title strong {
+                font-size: 12px;
+                line-height: 1.2;
+            }
+
+            .rec-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--soft);
+            }
+
+            .rec-dot.active {
+                background: var(--red);
+                box-shadow: 0 0 0 4px rgba(194, 65, 58, 0.12);
+            }
+
+            .recorder-state {
+                color: var(--muted);
+                font-size: 10.5px;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+            }
+
+            .recorder-detail {
+                color: var(--muted);
+                font-size: 10.5px;
+                line-height: 1.4;
+                text-wrap: pretty;
+            }
+
+            .recorder-actions {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 7px;
+            }
+
+            .recorder-actions .btn {
+                min-height: 34px;
+            }
+
+            .recorder-copy {
+                min-height: 30px;
+                justify-self: stretch;
+                color: var(--blue);
+                background: #fff;
+            }
+
+            .recorder-copy[hidden] {
+                display: none;
             }
 
             .section {
@@ -515,6 +613,37 @@
                     </div>
                 </section>
 
+                <section class="recorder" aria-label="UI 操作录制">
+                    <div class="section-head">
+                        <h2 class="section-title">UI Recorder</h2>
+                    </div>
+                    <div class="recorder-card">
+                        <div class="recorder-head">
+                            <div class="recorder-title">
+                                <span class="rec-dot" id="recorder-dot"></span>
+                                <strong id="recorder-title">未开始录制</strong>
+                            </div>
+                            <span class="recorder-state mono" id="recorder-state">
+                                extension
+                            </span>
+                        </div>
+                        <div class="recorder-detail" id="recorder-detail">
+                            打开目标网页后，从这里开始录制点击、输入、滚动和页面跳转。
+                        </div>
+                        <div class="recorder-actions">
+                            <button class="btn primary" id="recorder-start">
+                                开始录制
+                            </button>
+                            <button class="btn danger" id="recorder-stop" disabled>
+                                停止录制
+                            </button>
+                        </div>
+                        <button class="btn recorder-copy" id="recorder-copy" hidden>
+                            复制录制信息
+                        </button>
+                    </div>
+                </section>
+
                 <section class="section">
                     <div class="section-head">
                         <h2 class="section-title">浏览器能力</h2>
@@ -574,6 +703,14 @@
                                 <span>视口或整页截图</span>
                             </div>
                             <span class="cap-path mono">/capture</span>
+                        </div>
+                        <div class="cap-row">
+                            <span class="cap-code mono">REC</span>
+                            <div class="cap-name">
+                                <strong>UI 录制</strong>
+                                <span>操作流程转为脚本数据</span>
+                            </div>
+                            <span class="cap-path mono">/recording</span>
                         </div>
                     </div>
                 </section>
