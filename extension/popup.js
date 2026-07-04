@@ -9,7 +9,6 @@ const foregroundToggle = document.getElementById("foreground-toggle");
 const keepTabToggle = document.getElementById("keeptab-toggle");
 const logsBtn = document.getElementById("logs-btn");
 const guideBtn = document.getElementById("guide-btn");
-const copyCapabilitiesBtn = document.getElementById("copy-capabilities-btn");
 const sessionsEl = document.getElementById("sessions");
 const recorderDot = document.getElementById("recorder-dot");
 const recorderTitle = document.getElementById("recorder-title");
@@ -23,28 +22,6 @@ const recorderCopyBtn = document.getElementById("recorder-copy");
 
 const APP_URL = "http://localhost:9527";
 const STATUS_URL = `${APP_URL}/status`;
-const CAPABILITIES_REFERENCE = `TabWorks Bridge 浏览器扩展能力摘要
-
-本地服务地址: http://127.0.0.1:9527
-说明: CLI 不是使用前提；扩展无法判断 CLI 是否安装，只能检测 localhost:9527 的 bridge/log 服务是否在线。
-除 GET /status 外，请求需要本地服务在线、扩展已连接，并携带请求头 X-TabWorks-Bridge: 1。
-
-支持能力:
-- 执行脚本: POST /run-js，在目标页面上下文运行 JavaScript。
-- 页面导航: POST /open，创建自动化窗口、打开 URL、跳转、选择或关闭标签页。
-- 点击元素: POST /tap，支持 mode: "mouse" 走 CDP 鼠标事件，适合 antd Select。
-- 输入文本: POST /input，兼容普通 input/textarea/select/contenteditable；对 React/antd 受控输入会优先走原生 setter 并触发 input/change。
-- 请求接口: POST /request，在页面上下文发起 fetch，可携带当前页面登录态，例如请求 /api/animals。
-- 读取 DOM: POST /inspect，读取标题、URL、正文摘要和链接列表。
-- 读取 Cookie: POST /cookies，按 URL 或域名读取 cookie。
-- 页面截图: POST /capture，截取当前视口或整页截图。
-- UI 录制: POST /recording/start、/recording/stop、/recording/status，从扩展里录制当前页面操作并写入 .bridge/ui-record。
-- UI 回放: POST /recording/replay，在当前页面重复执行已保存的录制事件。
-
-辅助接口:
-- GET /status: 检查本地服务和扩展连接状态。
-- POST /sessions: 查看自动化窗口和标签页状态。
-`;
 
 const port = chrome.runtime.connect({ name: "popup" });
 
@@ -70,7 +47,15 @@ async function bridgeFetch(path, body = {}) {
     signal: AbortSignal.timeout(5000),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const message = data?.error || `HTTP ${res.status}`;
+    if (message.includes("未知路由") && path.startsWith("/recording/")) {
+      throw new Error(
+        "本地 bridge 版本还不支持 UI 录制，请重启本地服务后重试。",
+      );
+    }
+    throw new Error(message);
+  }
   return data;
 }
 
@@ -264,9 +249,6 @@ logsBtn.addEventListener("click", () => {
 });
 
 guideBtn.addEventListener("click", () => openGuide("interfaces"));
-copyCapabilitiesBtn.addEventListener("click", () =>
-  copyWithFeedback(copyCapabilitiesBtn, CAPABILITIES_REFERENCE),
-);
 
 recorderStartBtn.addEventListener("click", async () => {
   recorderStartBtn.disabled = true;
