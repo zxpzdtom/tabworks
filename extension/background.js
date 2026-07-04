@@ -717,6 +717,39 @@ async function injectRecorderIntoFrames(tabId, targetFrameId) {
   }
 }
 
+async function refreshTabBeforeReplay(tabId, url, timeoutMs = 12000) {
+  const targetUrl = url && isDebuggableUrl(url) ? url : null;
+  const waitMs = Math.max(1000, Math.min(Number(timeoutMs) || 12000, 60000));
+  await new Promise((resolve, reject) => {
+    let done = false;
+    let timer = null;
+
+    const finish = (error) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const listener = (updatedTabId, info) => {
+      if (updatedTabId === tabId && info.status === "complete") finish();
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+    timer = setTimeout(() => finish(new Error("等待页面刷新超时")), waitMs);
+
+    const navigation = targetUrl
+      ? chrome.tabs.update(tabId, { url: targetUrl, active: true })
+      : chrome.tabs.reload(tabId);
+    navigation.catch((err) =>
+      finish(err instanceof Error ? err : new Error(String(err))),
+    );
+  });
+  await sleep(500);
+}
+
 async function sendMessageToAllFrames(tabId, message) {
   const frames = await getTabFrames(tabId);
   const results = [];
@@ -774,7 +807,9 @@ function recordingStatus(item) {
     sessionId: item.sessionId,
     tabId: item.tabId,
     url: item.url,
+    startUrl: item.startUrl,
     title: item.title,
+    startTitle: item.startTitle,
     startedAt: item.startedAt,
     eventCount: item.events?.length || 0,
     frameCount: item.frames?.filter((frame) => frame.ok).length || 0,
@@ -790,6 +825,8 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
   const item = {
     sessionId,
     tabId: targetTabId,
+    startUrl: tab.url,
+    startTitle: tab.title,
     url: tab.url,
     title: tab.title,
     startedAt: new Date().toISOString(),
@@ -850,11 +887,30 @@ async function stopUiRecording(sessionId, tabId) {
 
 async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
   const last = await getLastUiRecording();
+  const saved =
+    last && (!sessionId || last.sessionId === sessionId) ? last : null;
   const source =
-    events ||
-    (last && (!sessionId || last.sessionId === sessionId) ? last.events : null);
+    events || (saved ? saved.events : null);
   if (!source) throw new Error("没有可回放的录制");
   const targetTabId = await resolveRecordingTabId(tabId);
+  if (options?.reloadBeforeReplay !== false) {
+    const firstEventUrl = source.find(
+      (event) =>
+        (event.frameId === undefined || event.frameId === 0) && event.url,
+    )?.url;
+    const replayStartUrl =
+      saved?.startUrl ||
+      options?.startUrl ||
+      firstEventUrl ||
+      saved?.url ||
+      options?.url;
+    await refreshTabBeforeReplay(
+      targetTabId,
+      replayStartUrl,
+      options?.navigationTimeoutMs,
+    );
+    await injectRecorderIntoFrames(targetTabId);
+  }
   const currentFrames = await getTabFrames(targetTabId);
   const grouped = new Map();
   for (const event of source) {

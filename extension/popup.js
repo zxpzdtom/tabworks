@@ -130,6 +130,13 @@ function renderRecording() {
   recorderDot.classList.toggle("active", Boolean(recording));
   recorderStartBtn.disabled = Boolean(recording);
   recorderStopBtn.disabled = !recording;
+  recorderStartBtn.textContent = recording
+    ? "录制中"
+    : lastRecordingResult
+      ? "重新录制"
+      : "开始录制";
+  recorderStartBtn.classList.toggle("primary", !lastRecordingResult);
+  recorderReplayBtn.classList.toggle("primary", Boolean(lastRecordingResult));
 
   if (recorderError) {
     recorderTitle.textContent = "录制操作失败";
@@ -158,18 +165,18 @@ function renderRecording() {
       recorderState.textContent = `${replay.played || 0} steps`;
       recorderDetail.textContent = replay.failures?.length
         ? `完成 ${replay.played || 0} 步，${replay.failures.length} 步未找到元素。`
-        : `已在当前页面回放 ${replay.played || 0} 个操作。`;
+        : `已刷新到录制起点，并回放 ${replay.played || 0} 个操作。`;
     } else {
       recorderTitle.textContent = "录制已保存";
       recorderState.textContent = `${lastRecordingResult.eventCount || 0} events`;
-      recorderDetail.textContent = "录制已保存在浏览器扩展中，可回放或下载为脚本。";
+      recorderDetail.textContent =
+        "回放会先刷新到录制起点，再按步骤执行；也可以下载为脚本。";
     }
     recorderSecondary.hidden = false;
     recorderReplayBtn.disabled = false;
     return;
   }
 
-  recorderTitle.textContent = serviceOnline ? "准备录制当前页面" : "等待本地服务";
   recorderTitle.textContent = "准备录制当前页面";
   recorderState.textContent = "ready";
   recorderDetail.textContent =
@@ -289,12 +296,12 @@ recorderReplayBtn.addEventListener("click", async () => {
   recorderError = "";
   recorderTitle.textContent = "正在回放录制";
   recorderState.textContent = "replay";
-  recorderDetail.textContent = "请保持目标页面为当前活动标签页。";
+  recorderDetail.textContent = "正在刷新到录制起点，然后按步骤回放。";
   try {
     const data = await sendRuntimeMessage({
       type: "tabworks-ui-recording-replay",
       sessionId: lastRecordingResult.sessionId,
-      options: { maxDelayMs: 2000 },
+      options: { maxDelayMs: 2000, reloadBeforeReplay: true },
     });
     lastRecordingResult = { ...lastRecordingResult, lastReplay: data };
     chrome.storage.local.set({ lastUiRecording: lastRecordingResult });
@@ -397,16 +404,18 @@ function buildDownloadedScript(recordingData) {
   lines.push("const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));");
   lines.push("");
   lines.push("async function main() {");
-  lines.push(`  const opened = await bridge('/open', { url: ${jsString(recordingData.url || "https://example.com")}, foreground: true });`);
+  lines.push(`  const opened = await bridge('/open', { url: ${jsString(recordingData.startUrl || recordingData.url || "https://example.com")}, foreground: true });`);
   lines.push("  const pageId = opened.pageId || opened.tabId;");
   lines.push("  await sleep(800);");
   if (needsExtensionReplay(events)) {
     lines.push("  await bridge('/recording/replay', {");
     lines.push("    pageId,");
     lines.push(`    title: ${jsString(recordingData.title || "")},`);
+    lines.push(`    startUrl: ${jsString(recordingData.startUrl || recordingData.url || "")},`);
     lines.push(`    url: ${jsString(recordingData.url || "")},`);
     lines.push(`    events: ${JSON.stringify(events, null, 4).replace(/\n/g, "\n    ")},`);
     lines.push("    maxDelayMs: 2000,");
+    lines.push("    reloadBeforeReplay: true,");
     lines.push("  });");
     lines.push("}");
     lines.push("");

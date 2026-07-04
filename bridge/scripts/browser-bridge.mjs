@@ -1219,6 +1219,9 @@ const httpServer = http.createServer(async (req, res) => {
         options: {
           speed: body.speed,
           maxDelayMs: body.maxDelayMs,
+          reloadBeforeReplay: body.reloadBeforeReplay !== false,
+          startUrl: body.startUrl || recording.startUrl || recording.url,
+          url: recording.url,
         },
       });
       return respond(res, 200, {
