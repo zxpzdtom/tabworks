@@ -156,7 +156,8 @@ function updateBadge() {
 // ─── 自动化窗口隔离 ──────────────────────────────────────────────────
 
 const automationSessions = new Map();
-const recordingTabs = new Map(); // Map<tabId, { sessionId, startedAt }>
+const recordingTabs = new Map(); // Map<tabId, { sessionId, startedAt, events }>
+const LAST_UI_RECORDING_KEY = "lastUiRecording";
 
 function getWorkspaceKey(workspace) {
   return workspace?.trim() || "default";
@@ -530,6 +531,113 @@ async function sendMessageToTab(tabId, message) {
   }
 }
 
+function createRecordingSessionId() {
+  return `ui_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function storageGet(keys) {
+  return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+}
+
+function storageSet(items) {
+  return new Promise((resolve) => chrome.storage.local.set(items, resolve));
+}
+
+async function getLastUiRecording() {
+  const result = await storageGet([LAST_UI_RECORDING_KEY]);
+  return result[LAST_UI_RECORDING_KEY] || null;
+}
+
+function recordingStatus(item) {
+  if (!item) return null;
+  return {
+    sessionId: item.sessionId,
+    tabId: item.tabId,
+    url: item.url,
+    title: item.title,
+    startedAt: item.startedAt,
+    eventCount: item.events?.length || 0,
+  };
+}
+
+async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
+  const targetTabId = await resolveRecordingTabId(tabId);
+  const tab = await chrome.tabs.get(targetTabId);
+  if (!isDebuggableUrl(tab.url)) {
+    throw new Error(`无法录制当前 URL：${tab.url}`);
+  }
+  const item = {
+    sessionId,
+    tabId: targetTabId,
+    url: tab.url,
+    title: tab.title,
+    startedAt: new Date().toISOString(),
+    events: [],
+  };
+  recordingTabs.set(targetTabId, item);
+  let response;
+  try {
+    response = await sendMessageToTab(targetTabId, {
+      type: "tabworks-recording-start",
+      sessionId,
+    });
+  } catch (err) {
+    recordingTabs.delete(targetTabId);
+    throw err;
+  }
+  item.url = response?.url ?? item.url;
+  item.title = response?.title ?? item.title;
+  return recordingStatus(item);
+}
+
+async function stopUiRecording(sessionId, tabId) {
+  const entries = [...recordingTabs.entries()];
+  const matched = entries.find(
+    ([entryTabId, item]) =>
+      item.sessionId === sessionId ||
+      (tabId !== undefined && Number(entryTabId) === Number(tabId)),
+  );
+  if (!matched) throw new Error("未找到正在录制的标签页");
+
+  const [targetTabId, item] = matched;
+  const response = await sendMessageToTab(targetTabId, {
+    type: "tabworks-recording-stop",
+    sessionId: item.sessionId,
+  });
+  item.events.push({
+    seq: item.events.length + 1,
+    at: new Date().toISOString(),
+    url: response?.url ?? item.url,
+    title: response?.title ?? item.title,
+    kind: "stop",
+  });
+  recordingTabs.delete(targetTabId);
+  const saved = {
+    ...item,
+    url: response?.url ?? item.url,
+    title: response?.title ?? item.title,
+    stoppedAt: new Date().toISOString(),
+    eventCount: item.events.length,
+  };
+  await storageSet({ [LAST_UI_RECORDING_KEY]: saved });
+  return saved;
+}
+
+async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
+  const last = await getLastUiRecording();
+  const source =
+    events ||
+    (last && (!sessionId || last.sessionId === sessionId) ? last.events : null);
+  if (!source) throw new Error("没有可回放的录制");
+  const targetTabId = await resolveRecordingTabId(tabId);
+  const response = await sendMessageToTab(targetTabId, {
+    type: "tabworks-recording-replay",
+    events: source,
+    options: options || {},
+  });
+  return { tabId: targetTabId, ...(response || {}) };
+}
+
 // ─── 命令分发 ────────────────────────────────────────────────────────
 
 async function handleCommand(cmd) {
@@ -834,57 +942,20 @@ async function handleScreenshot(cmd, workspace) {
 async function handleRecording(cmd) {
   const op = cmd.op;
   if (op === "start") {
-    const tabId = await resolveRecordingTabId(cmd.tabId);
-    const tab = await chrome.tabs.get(tabId);
-    if (!isDebuggableUrl(tab.url)) {
-      return { id: cmd.id, ok: false, error: `无法录制当前 URL：${tab.url}` };
-    }
-    const response = await sendMessageToTab(tabId, {
-      type: "tabworks-recording-start",
-      sessionId: cmd.sessionId,
-    });
-    recordingTabs.set(tabId, {
-      sessionId: cmd.sessionId,
-      startedAt: Date.now(),
-    });
+    const data = await startUiRecording(cmd.tabId, cmd.sessionId);
     return {
       id: cmd.id,
       ok: true,
-      data: {
-        sessionId: cmd.sessionId,
-        tabId,
-        url: response?.url ?? tab.url,
-        title: response?.title ?? tab.title,
-      },
+      data,
     };
   }
 
   if (op === "stop") {
-    const sessionId = cmd.sessionId;
-    const entries = [...recordingTabs.entries()];
-    const matched = entries.find(
-      ([tabId, item]) =>
-        item.sessionId === sessionId ||
-        (cmd.tabId !== undefined && Number(tabId) === Number(cmd.tabId)),
-    );
-    if (!matched) {
-      return { id: cmd.id, ok: false, error: "未找到正在录制的标签页" };
-    }
-    const [tabId, item] = matched;
-    const response = await sendMessageToTab(tabId, {
-      type: "tabworks-recording-stop",
-      sessionId: item.sessionId,
-    });
-    recordingTabs.delete(tabId);
+    const data = await stopUiRecording(cmd.sessionId, cmd.tabId);
     return {
       id: cmd.id,
       ok: true,
-      data: {
-        sessionId: item.sessionId,
-        tabId,
-        url: response?.url,
-        title: response?.title,
-      },
+      data,
     };
   }
 
@@ -896,24 +967,21 @@ async function handleRecording(cmd) {
         tabId,
         sessionId: item.sessionId,
         startedAt: item.startedAt,
+        eventCount: item.events?.length || 0,
       })),
     };
   }
 
   if (op === "replay") {
-    const tabId = await resolveRecordingTabId(cmd.tabId);
-    const response = await sendMessageToTab(tabId, {
-      type: "tabworks-recording-replay",
-      events: cmd.events || [],
-      options: cmd.options || {},
+    const response = await replayUiRecording({
+      tabId: cmd.tabId,
+      events: cmd.events,
+      options: cmd.options,
     });
     return {
       id: cmd.id,
       ok: response?.ok !== false,
-      data: {
-        tabId,
-        ...(response || {}),
-      },
+      data: response,
       error: response?.ok === false ? response.error || "回放失败" : undefined,
     };
   }
@@ -1080,12 +1148,72 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => popupPorts.delete(port));
 });
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "tabworks-ui-recording-start") {
+    startUiRecording(message.tabId)
+      .then((data) => ({ ok: true, ...data }))
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return true;
+  }
+
+  if (message?.type === "tabworks-ui-recording-stop") {
+    stopUiRecording(message.sessionId, message.tabId)
+      .then((data) => ({ ok: true, ...data }))
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return true;
+  }
+
+  if (message?.type === "tabworks-ui-recording-status") {
+    const active = [...recordingTabs.values()][0] || null;
+    getLastUiRecording()
+      .then((lastRecording) => ({
+        ok: true,
+        recording: active ? recordingStatus(active) : null,
+        lastRecording,
+      }))
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return true;
+  }
+
+  if (message?.type === "tabworks-ui-recording-replay") {
+    replayUiRecording(message)
+      .then((data) => ({ ok: data?.ok !== false, ...data }))
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return true;
+  }
+
   if (message?.type !== "tabworks-recording-event") return false;
   const tabId = sender.tab?.id;
   if (!tabId) return false;
   const recording = recordingTabs.get(tabId);
   if (!recording || recording.sessionId !== message.sessionId) return false;
+  recording.events.push(message.event);
+  if (message.event?.url) recording.url = message.event.url;
+  if (message.event?.title) recording.title = message.event.title;
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(
       JSON.stringify({

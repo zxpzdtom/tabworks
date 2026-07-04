@@ -296,10 +296,29 @@
     return { ok: true, kind: event.kind, skipped: true };
   }
 
-  async function replayEvents(events, options = {}) {
+  function normalizePlayableEvents(events) {
     const playable = events.filter((event) =>
       ["click", "input", "scroll", "submit"].includes(event.kind),
     );
+    const normalized = [];
+    for (const event of playable) {
+      const previous = normalized[normalized.length - 1];
+      if (
+        event.kind === "input" &&
+        previous?.kind === "input" &&
+        selectorForEvent(previous) === selectorForEvent(event) &&
+        previous.value === event.value
+      ) {
+        previous.at = event.at || previous.at;
+        continue;
+      }
+      normalized.push(event);
+    }
+    return normalized;
+  }
+
+  async function replayEvents(events, options = {}) {
+    const playable = normalizePlayableEvents(events);
     const speed = Math.max(0.1, Number(options.speed || 1));
     const maxDelayMs = Math.max(0, Number(options.maxDelayMs ?? 2000));
     const results = [];

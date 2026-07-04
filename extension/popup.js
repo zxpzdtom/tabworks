@@ -18,7 +18,7 @@ const recorderStartBtn = document.getElementById("recorder-start");
 const recorderStopBtn = document.getElementById("recorder-stop");
 const recorderSecondary = document.getElementById("recorder-secondary");
 const recorderReplayBtn = document.getElementById("recorder-replay");
-const recorderCopyBtn = document.getElementById("recorder-copy");
+const recorderDownloadBtn = document.getElementById("recorder-download");
 
 const APP_URL = "http://localhost:9527";
 const STATUS_URL = `${APP_URL}/status`;
@@ -36,27 +36,21 @@ let recording = null;
 let lastRecordingResult = null;
 let recorderError = "";
 
-async function bridgeFetch(path, body = {}) {
-  const res = await fetch(`${APP_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-TabWorks-Bridge": "1",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        reject(new Error(err.message));
+        return;
+      }
+      if (response?.ok === false) {
+        reject(new Error(response.error || "操作失败"));
+        return;
+      }
+      resolve(response);
+    });
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const message = data?.error || `HTTP ${res.status}`;
-    if (message.includes("未知路由") && path.startsWith("/recording/")) {
-      throw new Error(
-        "本地 bridge 版本还不支持 UI 录制，请重启本地服务后重试。",
-      );
-    }
-    throw new Error(message);
-  }
-  return data;
 }
 
 function setStatusVisual(kind, label, title, detail) {
@@ -134,8 +128,8 @@ function shortSessionId(sessionId = "") {
 
 function renderRecording() {
   recorderDot.classList.toggle("active", Boolean(recording));
-  recorderStartBtn.disabled = !serviceOnline || Boolean(recording);
-  recorderStopBtn.disabled = !serviceOnline || !recording;
+  recorderStartBtn.disabled = Boolean(recording);
+  recorderStopBtn.disabled = !recording;
 
   if (recorderError) {
     recorderTitle.textContent = "录制操作失败";
@@ -168,33 +162,28 @@ function renderRecording() {
     } else {
       recorderTitle.textContent = "录制已保存";
       recorderState.textContent = `${lastRecordingResult.eventCount || 0} events`;
-      recorderDetail.textContent = lastRecordingResult.outDir
-        ? `${lastRecordingResult.outDir}/session.json`
-        : "录制产物已写入 .bridge/ui-record。";
+      recorderDetail.textContent = "录制已保存在浏览器扩展中，可回放或下载为脚本。";
     }
     recorderSecondary.hidden = false;
-    recorderReplayBtn.disabled = !serviceOnline;
+    recorderReplayBtn.disabled = false;
     return;
   }
 
   recorderTitle.textContent = serviceOnline ? "准备录制当前页面" : "等待本地服务";
-  recorderState.textContent = serviceOnline ? "ready" : "offline";
-  recorderDetail.textContent = serviceOnline
-    ? "打开目标网页后，点开始录制；操作完成后回到这里停止。"
-    : "录制需要本地 bridge 在线，用于保存操作事件。";
+  recorderTitle.textContent = "准备录制当前页面";
+  recorderState.textContent = "ready";
+  recorderDetail.textContent =
+    "打开目标网页后，点开始录制；操作完成后回到这里停止。";
   recorderSecondary.hidden = true;
 }
 
 async function refreshRecordingStatus() {
-  if (!serviceOnline) {
-    recording = null;
-    renderRecording();
-    return;
-  }
-
   try {
-    const data = await bridgeFetch("/recording/status", {});
-    recording = data.recordings?.[0] || null;
+    const data = await sendRuntimeMessage({ type: "tabworks-ui-recording-status" });
+    recording = data.recording || null;
+    if (!recording && data.lastRecording && !lastRecordingResult) {
+      lastRecordingResult = data.lastRecording;
+    }
   } catch {
     recording = null;
   }
@@ -255,13 +244,12 @@ recorderStartBtn.addEventListener("click", async () => {
   recorderError = "";
   recorderDetail.textContent = "正在连接当前标签页录制脚本…";
   try {
-    const data = await bridgeFetch("/recording/start", {});
+    const data = await sendRuntimeMessage({ type: "tabworks-ui-recording-start" });
     recording = {
       sessionId: data.sessionId,
       tabId: data.tabId,
       url: data.url,
       title: data.title,
-      outDir: data.outDir,
       eventCount: 0,
     };
     lastRecordingResult = null;
@@ -279,11 +267,13 @@ recorderStopBtn.addEventListener("click", async () => {
   const sessionId = recording.sessionId;
   recorderStopBtn.disabled = true;
   recorderError = "";
-  recorderDetail.textContent = "正在停止录制并保存产物…";
+  recorderDetail.textContent = "正在停止录制并保存到浏览器扩展…";
   try {
-    const data = await bridgeFetch("/recording/stop", { sessionId });
+    const data = await sendRuntimeMessage({
+      type: "tabworks-ui-recording-stop",
+      sessionId,
+    });
     lastRecordingResult = data;
-    chrome.storage.local.set({ lastUiRecording: data });
     recording = null;
     recorderError = "";
   } catch (err) {
@@ -301,9 +291,10 @@ recorderReplayBtn.addEventListener("click", async () => {
   recorderState.textContent = "replay";
   recorderDetail.textContent = "请保持目标页面为当前活动标签页。";
   try {
-    const data = await bridgeFetch("/recording/replay", {
+    const data = await sendRuntimeMessage({
+      type: "tabworks-ui-recording-replay",
       sessionId: lastRecordingResult.sessionId,
-      maxDelayMs: 2000,
+      options: { maxDelayMs: 2000 },
     });
     lastRecordingResult = { ...lastRecordingResult, lastReplay: data };
     chrome.storage.local.set({ lastUiRecording: lastRecordingResult });
@@ -314,21 +305,121 @@ recorderReplayBtn.addEventListener("click", async () => {
   renderRecording();
 });
 
-recorderCopyBtn.addEventListener("click", () => {
-  const source = recording || lastRecordingResult;
-  if (!source) return;
-  const text = [
-    "TabWorks UI 录制",
-    `sessionId: ${source.sessionId}`,
-    source.tabId ? `tabId: ${source.tabId}` : "",
-    source.eventCount !== undefined ? `events: ${source.eventCount}` : "",
-    source.title ? `title: ${source.title}` : "",
-    source.url ? `url: ${source.url}` : "",
-    source.outDir ? `file: ${source.outDir}/session.json` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  copyWithFeedback(recorderCopyBtn, text);
+function jsString(value) {
+  return JSON.stringify(String(value ?? ""));
+}
+
+function selectorForEvent(event) {
+  return (
+    event?.element?.preferredSelector ||
+    event?.element?.selectors?.[0]?.selector ||
+    ""
+  );
+}
+
+function normalizeEvents(events = []) {
+  const playable = events.filter((event) =>
+    ["click", "input", "scroll", "submit", "navigation"].includes(event.kind),
+  );
+  const normalized = [];
+  for (const event of playable) {
+    const previous = normalized[normalized.length - 1];
+    if (
+      event.kind === "input" &&
+      previous?.kind === "input" &&
+      selectorForEvent(previous) === selectorForEvent(event) &&
+      previous.value === event.value
+    ) {
+      previous.at = event.at || previous.at;
+      continue;
+    }
+    normalized.push(event);
+  }
+  return normalized;
+}
+
+function buildDownloadedScript(recordingData) {
+  const events = normalizeEvents(recordingData.events || []);
+  const lines = [];
+  lines.push("#!/usr/bin/env node");
+  lines.push("// Generated by TabWorks Bridge UI Recorder");
+  lines.push(`// Source: ${recordingData.title || recordingData.url || "unknown"}`);
+  lines.push("");
+  lines.push('const BRIDGE = process.env.TABWORKS_BRIDGE || "http://127.0.0.1:9527";');
+  lines.push("");
+  lines.push("async function bridge(path, body) {");
+  lines.push("  const res = await fetch(`${BRIDGE}${path}`, {");
+  lines.push("    method: body === undefined ? 'GET' : 'POST',");
+  lines.push("    headers: { 'Content-Type': 'application/json', 'X-TabWorks-Bridge': '1' },");
+  lines.push("    body: body === undefined ? undefined : JSON.stringify(body),");
+  lines.push("  });");
+  lines.push("  const data = await res.json().catch(() => ({}));");
+  lines.push("  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);");
+  lines.push("  return data;");
+  lines.push("}");
+  lines.push("");
+  lines.push("const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));");
+  lines.push("");
+  lines.push("async function main() {");
+  lines.push(`  const opened = await bridge('/open', { url: ${jsString(recordingData.url || "https://example.com")}, foreground: true });`);
+  lines.push("  const pageId = opened.pageId || opened.tabId;");
+  lines.push("  await sleep(800);");
+  let previousAt = null;
+  for (const event of events) {
+    if (previousAt && event.at) {
+      const delta = new Date(event.at).getTime() - new Date(previousAt).getTime();
+      if (Number.isFinite(delta) && delta > 100) {
+        lines.push(`  await sleep(${Math.min(Math.round(delta), 2000)});`);
+      }
+    }
+    previousAt = event.at || previousAt;
+    const selector = selectorForEvent(event);
+    if (event.kind === "click" && selector) {
+      lines.push(`  await bridge('/tap', { pageId, selector: ${jsString(selector)}, mode: 'mouse' });`);
+    } else if (event.kind === "input" && selector && !event.redacted) {
+      lines.push(`  await bridge('/input', { pageId, selector: ${jsString(selector)}, text: ${JSON.stringify(event.value ?? "")} });`);
+    } else if (event.kind === "scroll") {
+      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`window.scrollTo(${event.scrollX || 0}, ${event.scrollY || 0})`)} });`);
+    } else if (event.kind === "submit" && selector) {
+      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`document.querySelector(${JSON.stringify(selector)})?.requestSubmit?.()`)} });`);
+    } else if (event.kind === "navigation" && event.url) {
+      lines.push(`  await bridge('/goto', { pageId, url: ${jsString(event.url)} });`);
+    } else {
+      lines.push(`  // Skipped ${event.kind}: ${selector || "no stable selector"}`);
+    }
+  }
+  lines.push("}");
+  lines.push("");
+  lines.push("main().catch((error) => {");
+  lines.push("  console.error(error);");
+  lines.push("  process.exit(1);");
+  lines.push("});");
+  lines.push("");
+  return lines.join("\n");
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "text/javascript;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+recorderDownloadBtn.addEventListener("click", () => {
+  if (!lastRecordingResult) return;
+  const script = buildDownloadedScript(lastRecordingResult);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  downloadTextFile(`tabworks-recording-${stamp}.mjs`, script);
+  const originalText = recorderDownloadBtn.textContent;
+  recorderDownloadBtn.textContent = "已下载";
+  setTimeout(() => {
+    recorderDownloadBtn.textContent = originalText;
+  }, 1400);
 });
 
 async function checkViewerStatus() {
