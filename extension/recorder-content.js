@@ -621,8 +621,8 @@
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
     replayCursor.innerHTML = `
       <div class="tw-replay-cursor-glow"></div>
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 24 24" aria-hidden="true">
-        <path class="tw-replay-cursor-fill" d="M5.7 4.1C5.1 3.7 4.4 4.25 4.62 4.98L8.95 20.15C9.18 20.95 10.28 21.08 10.68 20.34L12.94 16.12C13.12 15.78 13.48 15.58 13.86 15.6L19.05 15.8C19.92 15.84 20.25 14.69 19.52 14.22L5.7 4.1Z" />
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 16 16" aria-hidden="true">
+        <path class="tw-replay-cursor-fill" transform="matrix(-1 0 0 1 16 0)" d="M14.082 2.182a.5.5 0 0 1 .103.557L8.528 15.467a.5.5 0 0 1-.917-.007L5.57 10.694.803 8.652a.5.5 0 0 1-.006-.916l12.728-5.657a.5.5 0 0 1 .556.103z" />
       </svg>
       <div class="tw-replay-cursor-ring"></div>
     `;
@@ -632,8 +632,8 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
@@ -642,28 +642,28 @@
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-glow {
   position: absolute;
-  left: -14px;
+  left: -13px;
   top: -12px;
-  width: 46px;
-  height: 46px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(64, 156, 255, .36) 0%, rgba(64, 156, 255, .20) 34%, rgba(64, 156, 255, 0) 70%);
+  background: radial-gradient(circle, rgba(64, 156, 255, .33) 0%, rgba(64, 156, 255, .18) 35%, rgba(64, 156, 255, 0) 70%);
   filter: blur(2px);
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
   position: relative;
   display: block;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   overflow: visible;
   filter:
-    drop-shadow(0 1px 1px rgba(15, 23, 42, .34))
-    drop-shadow(0 0 6px rgba(74, 158, 255, .56));
+    drop-shadow(0 1px 1px rgba(15, 23, 42, .32))
+    drop-shadow(0 0 5px rgba(74, 158, 255, .5));
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-fill {
   fill: #05070a;
   stroke: #fff;
-  stroke-width: 2.55;
+  stroke-width: 1.45;
   stroke-linecap: round;
   stroke-linejoin: round;
   paint-order: stroke fill;
@@ -700,7 +700,7 @@
     cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
     cursor.style.opacity = "1";
     cursor.classList.remove("click");
-    cursor.style.transform = `translate3d(${Math.round(point.x - 5)}px, ${Math.round(point.y - 4)}px, 0)`;
+    cursor.style.transform = `translate3d(${Math.round(point.x - 3)}px, ${Math.round(point.y - 3)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
     if (options.click) {
