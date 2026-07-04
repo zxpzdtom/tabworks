@@ -700,6 +700,23 @@ async function getTabFrames(tabId) {
   }
 }
 
+async function injectRecorderIntoFrames(tabId, targetFrameId) {
+  const frameIds =
+    Number.isInteger(targetFrameId)
+      ? [targetFrameId]
+      : (await getTabFrames(tabId)).map((frame) => frame.frameId);
+  for (const frameId of frameIds) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        files: ["recorder-content.js"],
+      });
+    } catch {
+      /* 某些受限 frame 不能注入，后续 sendMessage 会按 frame 汇报失败 */
+    }
+  }
+}
+
 async function sendMessageToAllFrames(tabId, message) {
   const frames = await getTabFrames(tabId);
   const results = [];
@@ -781,6 +798,7 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
   recordingTabs.set(targetTabId, item);
   let response;
   try {
+    await injectRecorderIntoFrames(targetTabId);
     response = await sendMessageToAllFrames(targetTabId, {
       type: "tabworks-recording-start",
       sessionId,
@@ -1519,6 +1537,7 @@ chrome.webNavigation.onCommitted.addListener(async ({ tabId, frameId, url }) => 
   const recording = recordingTabs.get(tabId);
   if (!recording || !isDebuggableUrl(url)) return;
   try {
+    await injectRecorderIntoFrames(tabId, frameId);
     await chrome.tabs.sendMessage(
       tabId,
       {

@@ -1,4 +1,7 @@
 (() => {
+  if (globalThis.__tabworksRecorderLoaded) return;
+  globalThis.__tabworksRecorderLoaded = true;
+
   let recording = null;
   let replaying = false;
   let seq = 0;
@@ -186,12 +189,17 @@
     send({ kind: "start", viewport: { width: innerWidth, height: innerHeight } });
   }
 
-  function syncRecordingState() {
+  function syncRecordingState(afterStart) {
+    if (recording) {
+      if (typeof afterStart === "function") afterStart();
+      return;
+    }
     chrome.runtime.sendMessage({ type: "tabworks-recording-sync" }, (response) => {
       if (chrome.runtime.lastError) return;
       if (response?.recording && response.sessionId && !recording) {
         startRecordingSession(response.sessionId);
       }
+      if (recording && typeof afterStart === "function") afterStart();
     });
   }
 
@@ -352,18 +360,23 @@
   document.addEventListener(
     "click",
     (event) => {
-      if (!recording || replaying) return;
+      if (replaying) return;
       if (performance.now() < suppressClickUntil) return;
       const meta = targetMetaFromEvent(event);
       if (!meta) return;
       const point = eventPoint(event);
-      send({
+      const clickEvent = {
         kind: "click",
         element: meta,
         x: point.x,
         y: point.y,
         button: event.button,
-      });
+      };
+      if (!recording) {
+        syncRecordingState(() => send(clickEvent));
+        return;
+      }
+      send(clickEvent);
     },
     true,
   );
@@ -371,7 +384,11 @@
   document.addEventListener(
     "pointerdown",
     (event) => {
-      if (!recording || replaying || event.button !== 0 || !event.isPrimary) return;
+      if (replaying || event.button !== 0 || !event.isPrimary) return;
+      if (!recording) {
+        syncRecordingState();
+        return;
+      }
       const point = eventPoint(event);
       const target = targetElementFromEvent(event);
       pointerStart = {
@@ -497,8 +514,12 @@
   document.addEventListener(
     "input",
     (event) => {
-      if (!recording || replaying || !isInputLike(event.target)) return;
+      if (replaying || !isInputLike(event.target)) return;
       const target = event.target;
+      if (!recording) {
+        syncRecordingState(() => recordInput(target, "input"));
+        return;
+      }
       clearTimeout(inputTimers.get(target));
       inputTimers.set(target, setTimeout(() => recordInput(target, "input"), 350));
     },
@@ -508,7 +529,12 @@
   document.addEventListener(
     "change",
     (event) => {
-      if (!recording || replaying || !isInputLike(event.target)) return;
+      if (replaying || !isInputLike(event.target)) return;
+      if (!recording) {
+        const target = event.target;
+        syncRecordingState(() => recordInput(target, "change"));
+        return;
+      }
       clearTimeout(inputTimers.get(event.target));
       recordInput(event.target, "change");
     },
@@ -569,9 +595,8 @@
     replayCursor = document.createElement("div");
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
     replayCursor.innerHTML = `
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 32 32" aria-hidden="true">
-        <path class="tw-replay-cursor-shadow" d="M7 4.5 24.5 20l-9.2 1.2 4.2 7.7-4 2.1-4.1-7.7-6.1 6.1L7 4.5Z" />
-        <path class="tw-replay-cursor-fill" d="M6 3 23.5 18.5l-9.2 1.2 4.2 7.7-4 2.1-4.1-7.7-6.1 6.1L6 3Z" />
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 24 24" aria-hidden="true">
+        <path class="tw-replay-cursor-fill" d="M4.8 3.4 18.9 14.2l-6.1 1.1 3.5 5.1-2.4 1.5-3.4-5.2-4.1 4.1L4.8 3.4Z" />
       </svg>
       <div class="tw-replay-cursor-ring"></div>
     `;
@@ -581,8 +606,8 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
@@ -591,28 +616,24 @@
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
   display: block;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   overflow: visible;
-  filter: drop-shadow(0 5px 10px rgba(15, 23, 42, .20));
-}
-[data-tabworks-replay-cursor] .tw-replay-cursor-shadow {
-  fill: rgba(15, 23, 42, .18);
-  transform: translate(1px, 1px);
+  filter: drop-shadow(0 3px 5px rgba(15, 23, 42, .18));
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-fill {
   fill: #fff;
-  stroke: #111827;
-  stroke-width: 1.45;
+  stroke: rgba(15, 23, 42, .78);
+  stroke-width: 1.1;
   stroke-linejoin: round;
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-ring {
   position: absolute;
-  left: 0;
-  top: 0;
-  width: 22px;
-  height: 22px;
-  border: 2px solid rgba(37, 99, 235, .42);
+  left: -5px;
+  top: -5px;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid rgba(15, 23, 42, .20);
   border-radius: 50%;
   opacity: 0;
   transform: scale(.6);
@@ -638,7 +659,7 @@
     cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
     cursor.style.opacity = "1";
     cursor.classList.remove("click");
-    cursor.style.transform = `translate3d(${Math.round(point.x - 6)}px, ${Math.round(point.y - 4)}px, 0)`;
+    cursor.style.transform = `translate3d(${Math.round(point.x - 4)}px, ${Math.round(point.y - 3)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
     if (options.click) {

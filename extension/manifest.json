@@ -9,7 +9,8 @@
     "cookies",
     "alarms",
     "storage",
-    "webNavigation"
+    "webNavigation",
+    "scripting"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
