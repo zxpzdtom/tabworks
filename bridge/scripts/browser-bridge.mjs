@@ -55,6 +55,7 @@ const BRIDGE_ROUTES = new Set([
   "/recording/start",
   "/recording/stop",
   "/recording/status",
+  "/recording/replay",
   "/shutdown",
 ]);
 const VIEWER_CORS_HEADERS = {
@@ -218,6 +219,16 @@ async function finishRecording(sessionId, finalMeta = {}) {
   );
   uiRecordings.delete(sessionId);
   return recording;
+}
+
+async function readRecordingSession(sessionId) {
+  requireField(sessionId, "sessionId");
+  const sessionFile = join(UI_RECORDINGS_DIR, String(sessionId), "session.json");
+  if (!isSubPath(UI_RECORDINGS_DIR, sessionFile)) {
+    throw new Error("非法录制 sessionId");
+  }
+  const raw = await readFile(sessionFile, "utf-8");
+  return JSON.parse(raw);
 }
 
 function aggregateLogs(entries) {
@@ -1055,6 +1066,30 @@ const httpServer = http.createServer(async (req, res) => {
         outDir: recording.outDir,
         url: recording.url,
         title: recording.title,
+      });
+    }
+
+    // POST /recording/replay — 在当前或指定标签页回放已保存的 UI 录制
+    if (req.method === "POST" && url.pathname === "/recording/replay") {
+      const body = await parseJson(req);
+      requireField(body.sessionId, "sessionId");
+      const recording = await readRecordingSession(body.sessionId);
+      const result = await sendToExtension({
+        action: "recording",
+        op: "replay",
+        tabId: body.pageId ?? body.tabId,
+        events: recording.events || [],
+        options: {
+          speed: body.speed,
+          maxDelayMs: body.maxDelayMs,
+        },
+      });
+      return respond(res, 200, {
+        ok: true,
+        sessionId: body.sessionId,
+        sourceTitle: recording.title,
+        sourceUrl: recording.url,
+        ...result,
       });
     }
 

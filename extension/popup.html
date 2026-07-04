@@ -357,6 +357,16 @@
                 min-height: 34px;
             }
 
+            .recorder-secondary {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 7px;
+            }
+
+            .recorder-secondary[hidden] {
+                display: none;
+            }
+
             .recorder-copy {
                 min-height: 30px;
                 justify-self: stretch;
@@ -638,9 +648,14 @@
                                 停止录制
                             </button>
                         </div>
-                        <button class="btn recorder-copy" id="recorder-copy" hidden>
-                            复制录制信息
-                        </button>
+                        <div class="recorder-secondary" id="recorder-secondary" hidden>
+                            <button class="btn" id="recorder-replay">
+                                回放录制
+                            </button>
+                            <button class="btn recorder-copy" id="recorder-copy">
+                                复制信息
+                            </button>
+                        </div>
                     </div>
                 </section>
 

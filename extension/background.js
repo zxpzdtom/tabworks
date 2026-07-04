@@ -900,6 +900,24 @@ async function handleRecording(cmd) {
     };
   }
 
+  if (op === "replay") {
+    const tabId = await resolveRecordingTabId(cmd.tabId);
+    const response = await sendMessageToTab(tabId, {
+      type: "tabworks-recording-replay",
+      events: cmd.events || [],
+      options: cmd.options || {},
+    });
+    return {
+      id: cmd.id,
+      ok: response?.ok !== false,
+      data: {
+        tabId,
+        ...(response || {}),
+      },
+      error: response?.ok === false ? response.error || "回放失败" : undefined,
+    };
+  }
+
   return { id: cmd.id, ok: false, error: `未知 recording op: ${op}` };
 }
 

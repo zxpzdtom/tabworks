@@ -1,5 +1,6 @@
 (() => {
   let recording = null;
+  let replaying = false;
   let seq = 0;
   let lastScrollTimer = null;
   const inputTimers = new WeakMap();
@@ -88,7 +89,7 @@
   }
 
   function send(event) {
-    if (!recording) return;
+    if (!recording || replaying) return;
     chrome.runtime.sendMessage({
       type: "tabworks-recording-event",
       sessionId: recording.sessionId,
@@ -140,7 +141,7 @@
   document.addEventListener(
     "click",
     (event) => {
-      if (!recording) return;
+      if (!recording || replaying) return;
       const target = event.target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']");
       const meta = selectorMeta(target || event.target);
       if (!meta) return;
@@ -158,7 +159,7 @@
   document.addEventListener(
     "input",
     (event) => {
-      if (!recording || !isInputLike(event.target)) return;
+      if (!recording || replaying || !isInputLike(event.target)) return;
       const target = event.target;
       clearTimeout(inputTimers.get(target));
       inputTimers.set(target, setTimeout(() => recordInput(target, "input"), 350));
@@ -169,7 +170,7 @@
   document.addEventListener(
     "change",
     (event) => {
-      if (!recording || !isInputLike(event.target)) return;
+      if (!recording || replaying || !isInputLike(event.target)) return;
       clearTimeout(inputTimers.get(event.target));
       recordInput(event.target, "change");
     },
@@ -179,7 +180,7 @@
   document.addEventListener(
     "submit",
     (event) => {
-      if (!recording) return;
+      if (!recording || replaying) return;
       const meta = selectorMeta(event.target);
       send({ kind: "submit", element: meta });
     },
@@ -189,7 +190,7 @@
   window.addEventListener(
     "scroll",
     () => {
-      if (!recording) return;
+      if (!recording || replaying) return;
       clearTimeout(lastScrollTimer);
       lastScrollTimer = setTimeout(() => {
         send({
@@ -204,6 +205,129 @@
 
   function recordNavigation(reason) {
     send({ kind: "navigation", reason });
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function selectorForEvent(event) {
+    return (
+      event?.element?.preferredSelector ||
+      event?.element?.selectors?.[0]?.selector ||
+      ""
+    );
+  }
+
+  function setNativeValue(el, value) {
+    const proto =
+      el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : el instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : el instanceof HTMLSelectElement
+            ? HTMLSelectElement.prototype
+            : null;
+    const descriptor = proto
+      ? Object.getOwnPropertyDescriptor(proto, "value")
+      : null;
+    if (descriptor?.set) descriptor.set.call(el, value);
+    else if ("value" in el) el.value = value;
+    else if (el.isContentEditable) el.textContent = value;
+  }
+
+  function dispatchInputEvents(el, value) {
+    try {
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: String(value ?? ""),
+        }),
+      );
+    } catch {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function replayEvent(event) {
+    if (event.kind === "click") {
+      const selector = selectorForEvent(event);
+      const el = selector ? document.querySelector(selector) : null;
+      if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      await wait(80);
+      el.click();
+      return { ok: true, kind: event.kind, selector };
+    }
+
+    if (event.kind === "input") {
+      const selector = selectorForEvent(event);
+      const el = selector ? document.querySelector(selector) : null;
+      if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      if (typeof el.focus === "function") el.focus();
+      if (el instanceof HTMLSelectElement && Array.isArray(event.value)) {
+        for (const option of el.options) {
+          option.selected = event.value.includes(option.value);
+        }
+      } else {
+        setNativeValue(el, event.value ?? "");
+      }
+      dispatchInputEvents(el, event.value ?? "");
+      return { ok: true, kind: event.kind, selector };
+    }
+
+    if (event.kind === "scroll") {
+      window.scrollTo(event.scrollX || 0, event.scrollY || 0);
+      return { ok: true, kind: event.kind };
+    }
+
+    if (event.kind === "submit") {
+      const selector = selectorForEvent(event);
+      const el = selector ? document.querySelector(selector) : null;
+      if (!el) return { ok: false, kind: event.kind, selector, error: "表单未找到" };
+      if (typeof el.requestSubmit === "function") el.requestSubmit();
+      else el.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      return { ok: true, kind: event.kind, selector };
+    }
+
+    return { ok: true, kind: event.kind, skipped: true };
+  }
+
+  async function replayEvents(events, options = {}) {
+    const playable = events.filter((event) =>
+      ["click", "input", "scroll", "submit"].includes(event.kind),
+    );
+    const speed = Math.max(0.1, Number(options.speed || 1));
+    const maxDelayMs = Math.max(0, Number(options.maxDelayMs ?? 2000));
+    const results = [];
+    let previousAt = null;
+
+    replaying = true;
+    try {
+      for (const event of playable) {
+        if (previousAt && event.at) {
+          const delta = new Date(event.at).getTime() - new Date(previousAt).getTime();
+          if (Number.isFinite(delta) && delta > 0) {
+            await wait(Math.min(delta / speed, maxDelayMs));
+          }
+        }
+        previousAt = event.at || previousAt;
+        results.push(await replayEvent(event));
+      }
+    } finally {
+      replaying = false;
+    }
+
+    return {
+      ok: results.every((item) => item.ok),
+      played: results.filter((item) => item.ok && !item.skipped).length,
+      skipped: results.filter((item) => item.skipped).length,
+      failures: results.filter((item) => !item.ok),
+      results,
+    };
   }
 
   for (const name of ["pushState", "replaceState"]) {
@@ -238,6 +362,18 @@
 
     if (message?.type === "tabworks-recording-status") {
       sendResponse({ ok: true, recording: Boolean(recording), sessionId: recording?.sessionId });
+      return true;
+    }
+
+    if (message?.type === "tabworks-recording-replay") {
+      replayEvents(message.events || [], message.options || {})
+        .then((result) => sendResponse(result))
+        .catch((err) =>
+          sendResponse({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
       return true;
     }
 

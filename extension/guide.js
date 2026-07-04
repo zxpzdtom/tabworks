@@ -113,6 +113,14 @@ const API_REFERENCE = [
     purpose: "查看正在进行的 UI 录制 session。",
     dependency: "本地服务",
   },
+  {
+    code: "PLY",
+    capability: "回放 UI 录制",
+    method: "POST",
+    endpoint: "/recording/replay",
+    purpose: "读取已保存的 session，在当前或指定标签页重复执行 click/input/scroll/submit 事件。",
+    dependency: "已有录制 session，目标页面处于可回放状态",
+  },
 ];
 
 async function copyWithFeedback(btn, text) {
@@ -155,6 +163,8 @@ function sampleBodyForEndpoint(endpoint) {
   if (endpoint === "/recording/start") return { tabId: 123 };
   if (endpoint === "/recording/stop") return { sessionId: "ui_1234567890_demo" };
   if (endpoint === "/recording/status") return {};
+  if (endpoint === "/recording/replay")
+    return { sessionId: "ui_1234567890_demo", maxDelayMs: 2000 };
   return { pageId: 123 };
 }
 

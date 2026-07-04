@@ -17,6 +17,8 @@ const recorderState = document.getElementById("recorder-state");
 const recorderDetail = document.getElementById("recorder-detail");
 const recorderStartBtn = document.getElementById("recorder-start");
 const recorderStopBtn = document.getElementById("recorder-stop");
+const recorderSecondary = document.getElementById("recorder-secondary");
+const recorderReplayBtn = document.getElementById("recorder-replay");
 const recorderCopyBtn = document.getElementById("recorder-copy");
 
 const APP_URL = "http://localhost:9527";
@@ -37,6 +39,7 @@ const CAPABILITIES_REFERENCE = `TabWorks Bridge 浏览器扩展能力摘要
 - 读取 Cookie: POST /cookies，按 URL 或域名读取 cookie。
 - 页面截图: POST /capture，截取当前视口或整页截图。
 - UI 录制: POST /recording/start、/recording/stop、/recording/status，从扩展里录制当前页面操作并写入 .bridge/ui-record。
+- UI 回放: POST /recording/replay，在当前页面重复执行已保存的录制事件。
 
 辅助接口:
 - GET /status: 检查本地服务和扩展连接状态。
@@ -153,7 +156,7 @@ function renderRecording() {
     recorderTitle.textContent = "录制操作失败";
     recorderState.textContent = "error";
     recorderDetail.textContent = recorderError;
-    recorderCopyBtn.hidden = true;
+    recorderSecondary.hidden = true;
     return;
   }
 
@@ -163,17 +166,29 @@ function renderRecording() {
     recorderDetail.textContent = `${shortSessionId(recording.sessionId)} · ${
       recording.title || recording.url || "当前标签页"
     }`;
-    recorderCopyBtn.hidden = false;
+    recorderSecondary.hidden = true;
     return;
   }
 
   if (lastRecordingResult) {
-    recorderTitle.textContent = "录制已保存";
-    recorderState.textContent = `${lastRecordingResult.eventCount || 0} events`;
-    recorderDetail.textContent = lastRecordingResult.outDir
-      ? `${lastRecordingResult.outDir}/session.json`
-      : "录制产物已写入 .bridge/ui-record。";
-    recorderCopyBtn.hidden = false;
+    if (lastRecordingResult.lastReplay) {
+      const replay = lastRecordingResult.lastReplay;
+      recorderTitle.textContent = replay.failures?.length
+        ? "回放完成，有步骤未命中"
+        : "回放完成";
+      recorderState.textContent = `${replay.played || 0} steps`;
+      recorderDetail.textContent = replay.failures?.length
+        ? `完成 ${replay.played || 0} 步，${replay.failures.length} 步未找到元素。`
+        : `已在当前页面回放 ${replay.played || 0} 个操作。`;
+    } else {
+      recorderTitle.textContent = "录制已保存";
+      recorderState.textContent = `${lastRecordingResult.eventCount || 0} events`;
+      recorderDetail.textContent = lastRecordingResult.outDir
+        ? `${lastRecordingResult.outDir}/session.json`
+        : "录制产物已写入 .bridge/ui-record。";
+    }
+    recorderSecondary.hidden = false;
+    recorderReplayBtn.disabled = !serviceOnline;
     return;
   }
 
@@ -182,7 +197,7 @@ function renderRecording() {
   recorderDetail.textContent = serviceOnline
     ? "打开目标网页后，点开始录制；操作完成后回到这里停止。"
     : "录制需要本地 bridge 在线，用于保存操作事件。";
-  recorderCopyBtn.hidden = true;
+  recorderSecondary.hidden = true;
 }
 
 async function refreshRecordingStatus() {
@@ -286,12 +301,34 @@ recorderStopBtn.addEventListener("click", async () => {
   try {
     const data = await bridgeFetch("/recording/stop", { sessionId });
     lastRecordingResult = data;
+    chrome.storage.local.set({ lastUiRecording: data });
     recording = null;
     recorderError = "";
   } catch (err) {
     recorderError =
       err instanceof Error ? err.message : "停止录制失败。";
   }
+  renderRecording();
+});
+
+recorderReplayBtn.addEventListener("click", async () => {
+  if (!lastRecordingResult?.sessionId) return;
+  recorderReplayBtn.disabled = true;
+  recorderError = "";
+  recorderTitle.textContent = "正在回放录制";
+  recorderState.textContent = "replay";
+  recorderDetail.textContent = "请保持目标页面为当前活动标签页。";
+  try {
+    const data = await bridgeFetch("/recording/replay", {
+      sessionId: lastRecordingResult.sessionId,
+      maxDelayMs: 2000,
+    });
+    lastRecordingResult = { ...lastRecordingResult, lastReplay: data };
+    chrome.storage.local.set({ lastUiRecording: lastRecordingResult });
+  } catch (err) {
+    recorderError = err instanceof Error ? err.message : "回放失败。";
+  }
+  recorderReplayBtn.disabled = false;
   renderRecording();
 });
 
@@ -331,6 +368,12 @@ async function checkViewerStatus() {
 
 checkViewerStatus();
 refreshRecordingStatus();
+chrome.storage.local.get(["lastUiRecording"], (result) => {
+  if (result.lastUiRecording) {
+    lastRecordingResult = result.lastUiRecording;
+    renderRecording();
+  }
+});
 port.postMessage({ type: "getSessions" });
 const statusTimer = setInterval(checkViewerStatus, 3000);
 const sessionTimer = setInterval(
