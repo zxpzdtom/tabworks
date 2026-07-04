@@ -177,6 +177,24 @@
     });
   }
 
+  function startRecordingSession(sessionId) {
+    recording = {
+      sessionId,
+      startedAt: now(),
+    };
+    seq = 0;
+    send({ kind: "start", viewport: { width: innerWidth, height: innerHeight } });
+  }
+
+  function syncRecordingState() {
+    chrome.runtime.sendMessage({ type: "tabworks-recording-sync" }, (response) => {
+      if (chrome.runtime.lastError) return;
+      if (response?.recording && response.sessionId && !recording) {
+        startRecordingSession(response.sessionId);
+      }
+    });
+  }
+
   function inputValue(el) {
     if (el instanceof HTMLInputElement && el.type === "password") {
       return { value: "", redacted: true };
@@ -550,38 +568,51 @@
     if (replayCursor) return replayCursor;
     replayCursor = document.createElement("div");
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
-    replayCursor.innerHTML = `<div class="tw-replay-cursor-tip"></div><div class="tw-replay-cursor-ring"></div>`;
+    replayCursor.innerHTML = `
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 32 32" aria-hidden="true">
+        <path class="tw-replay-cursor-shadow" d="M7 4.5 24.5 20l-9.2 1.2 4.2 7.7-4 2.1-4.1-7.7-6.1 6.1L7 4.5Z" />
+        <path class="tw-replay-cursor-fill" d="M6 3 23.5 18.5l-9.2 1.2 4.2 7.7-4 2.1-4.1-7.7-6.1 6.1L6 3Z" />
+      </svg>
+      <div class="tw-replay-cursor-ring"></div>
+    `;
     const style = document.createElement("style");
     style.textContent = `
 [data-tabworks-replay-cursor] {
   position: fixed;
   left: 0;
   top: 0;
-  width: 18px;
-  height: 18px;
+  width: 32px;
+  height: 32px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
   transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 120ms ease;
   opacity: 0;
 }
-[data-tabworks-replay-cursor] .tw-replay-cursor-tip {
-  width: 0;
-  height: 0;
-  border-left: 13px solid #2563eb;
-  border-top: 8px solid transparent;
-  border-bottom: 8px solid transparent;
-  filter: drop-shadow(0 3px 8px rgba(15, 23, 42, .22));
-  transform: rotate(45deg);
-  transform-origin: 2px 8px;
+[data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
+  display: block;
+  width: 32px;
+  height: 32px;
+  overflow: visible;
+  filter: drop-shadow(0 5px 10px rgba(15, 23, 42, .20));
+}
+[data-tabworks-replay-cursor] .tw-replay-cursor-shadow {
+  fill: rgba(15, 23, 42, .18);
+  transform: translate(1px, 1px);
+}
+[data-tabworks-replay-cursor] .tw-replay-cursor-fill {
+  fill: #fff;
+  stroke: #111827;
+  stroke-width: 1.45;
+  stroke-linejoin: round;
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-ring {
   position: absolute;
-  left: 5px;
-  top: 5px;
-  width: 20px;
-  height: 20px;
-  border: 2px solid rgba(37, 99, 235, .35);
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(37, 99, 235, .42);
   border-radius: 50%;
   opacity: 0;
   transform: scale(.6);
@@ -607,7 +638,7 @@
     cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
     cursor.style.opacity = "1";
     cursor.classList.remove("click");
-    cursor.style.transform = `translate3d(${Math.round(point.x)}px, ${Math.round(point.y)}px, 0)`;
+    cursor.style.transform = `translate3d(${Math.round(point.x - 6)}px, ${Math.round(point.y - 4)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
     if (options.click) {
@@ -882,12 +913,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "tabworks-recording-start") {
-      recording = {
-        sessionId: message.sessionId,
-        startedAt: now(),
-      };
-      seq = 0;
-      send({ kind: "start", viewport: { width: innerWidth, height: innerHeight } });
+      startRecordingSession(message.sessionId);
       sendResponse({ ok: true, url: location.href, title: document.title });
       return true;
     }
@@ -918,4 +944,6 @@
 
     return false;
   });
+
+  syncRecordingState();
 })();

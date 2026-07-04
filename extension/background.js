@@ -581,6 +581,17 @@ function isTargetUrl(currentUrl, targetUrl) {
   );
 }
 
+function normalizeFrameUrl(url) {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
 async function resolveTabId(tabId, workspace) {
   if (tabId !== undefined) {
     try {
@@ -826,11 +837,17 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     (last && (!sessionId || last.sessionId === sessionId) ? last.events : null);
   if (!source) throw new Error("没有可回放的录制");
   const targetTabId = await resolveRecordingTabId(tabId);
+  const currentFrames = await getTabFrames(targetTabId);
   const grouped = new Map();
   for (const event of source) {
-    const frameId = Number.isInteger(event.frameId) ? event.frameId : 0;
-    if (!grouped.has(frameId)) grouped.set(frameId, []);
-    grouped.get(frameId).push(event);
+    const recordedFrameId = Number.isInteger(event.frameId) ? event.frameId : 0;
+    const frameUrl = normalizeFrameUrl(event.frameUrl || event.url);
+    const matchedFrame =
+      frameUrl &&
+      currentFrames.find((frame) => normalizeFrameUrl(frame.url) === frameUrl);
+    const replayFrameId = matchedFrame?.frameId ?? recordedFrameId;
+    if (!grouped.has(replayFrameId)) grouped.set(replayFrameId, []);
+    grouped.get(replayFrameId).push(event);
   }
 
   const results = [];
@@ -1458,6 +1475,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "tabworks-recording-sync") {
+    const tabId = sender.tab?.id;
+    const recording = tabId ? recordingTabs.get(tabId) : null;
+    sendResponse({
+      ok: true,
+      recording: Boolean(recording),
+      sessionId: recording?.sessionId,
+    });
+    return true;
+  }
+
   if (message?.type !== "tabworks-recording-event") return false;
   const tabId = sender.tab?.id;
   if (!tabId) return false;
@@ -1484,6 +1512,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     );
   }
   return false;
+});
+
+chrome.webNavigation.onCommitted.addListener(async ({ tabId, frameId, url }) => {
+  if (!Number.isInteger(tabId) || !Number.isInteger(frameId)) return;
+  const recording = recordingTabs.get(tabId);
+  if (!recording || !isDebuggableUrl(url)) return;
+  try {
+    await chrome.tabs.sendMessage(
+      tabId,
+      {
+        type: "tabworks-recording-start",
+        sessionId: recording.sessionId,
+      },
+      { frameId },
+    );
+  } catch {
+    /* frame 可能还没注入 content script，content script 初始化时还会主动 sync */
+  }
 });
 
 // ─── 生命周期 ────────────────────────────────────────────────────────
