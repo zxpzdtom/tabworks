@@ -1,5 +1,5 @@
 (() => {
-  const RECORDER_SCRIPT_VERSION = 6;
+  const RECORDER_SCRIPT_VERSION = 7;
   if (globalThis.__tabworksRecorderVersion === RECORDER_SCRIPT_VERSION) return;
   globalThis.__tabworksRecorderVersion = RECORDER_SCRIPT_VERSION;
   globalThis.__tabworksRecorderLoaded = true;
@@ -13,6 +13,7 @@
   let replayCursor = null;
   let replayCursorPoint = null;
   const inputTimers = new WeakMap();
+  const handledEvents = new WeakSet();
   const DRAG_DISTANCE_PX = 12;
   const LONG_PRESS_MS = 650;
 
@@ -409,29 +410,36 @@
     return ["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Backspace", "Delete"].includes(event.key);
   }
 
-  document.addEventListener(
-    "click",
-    (event) => {
-      if (replaying) return;
-      if (performance.now() < suppressClickUntil) return;
-      const meta = targetMetaFromEvent(event);
-      if (!meta) return;
-      const point = eventPoint(event);
-      const clickEvent = {
-        kind: "click",
-        element: meta,
-        x: point.x,
-        y: point.y,
-        button: event.button,
-      };
-      if (!recording) {
-        syncRecordingState(() => send(clickEvent));
-        return;
-      }
-      send(clickEvent);
-    },
-    true,
-  );
+  function takeEvent(event) {
+    if (handledEvents.has(event)) return false;
+    handledEvents.add(event);
+    return true;
+  }
+
+  function addCaptureListener(type, handler) {
+    window.addEventListener(type, handler, true);
+    document.addEventListener(type, handler, true);
+  }
+
+  addCaptureListener("click", (event) => {
+    if (!takeEvent(event) || replaying) return;
+    if (performance.now() < suppressClickUntil) return;
+    const meta = targetMetaFromEvent(event);
+    if (!meta) return;
+    const point = eventPoint(event);
+    const clickEvent = {
+      kind: "click",
+      element: meta,
+      x: point.x,
+      y: point.y,
+      button: event.button,
+    };
+    if (!recording) {
+      syncRecordingState(() => send(clickEvent));
+      return;
+    }
+    send(clickEvent);
+  });
 
   function beginPointerGesture(event) {
     const point = eventPoint(event);
@@ -448,164 +456,125 @@
     };
   }
 
-  document.addEventListener(
-    "pointerdown",
-    (event) => {
-      if (replaying || event.button !== 0 || !event.isPrimary) return;
-      if (!recording) {
-        syncRecordingState(() => beginPointerGesture(event));
-        return;
-      }
-      beginPointerGesture(event);
-    },
-    true,
-  );
+  addCaptureListener("pointerdown", (event) => {
+    if (!takeEvent(event) || replaying || event.button !== 0 || !event.isPrimary) return;
+    if (!recording) {
+      syncRecordingState(() => beginPointerGesture(event));
+      return;
+    }
+    beginPointerGesture(event);
+  });
 
-  document.addEventListener(
-    "pointermove",
-    (event) => {
-      if (!recording || replaying || !pointerStart || event.pointerId !== pointerStart.pointerId) return;
-      pointerStart.lastPoint = eventPoint(event);
-    },
-    true,
-  );
+  addCaptureListener("pointermove", (event) => {
+    if (!takeEvent(event) || !recording || replaying || !pointerStart || event.pointerId !== pointerStart.pointerId) return;
+    pointerStart.lastPoint = eventPoint(event);
+  });
 
-  document.addEventListener(
-    "pointerup",
-    (event) => {
-      if (!recording || replaying || !pointerStart || event.pointerId !== pointerStart.pointerId) return;
-      const endedPoint = eventPoint(event);
-      const distance = pointDistance(pointerStart.point, endedPoint);
-      const durationMs = Math.round(performance.now() - pointerStart.startedAt);
-      const base = {
-        element: pointerStart.element,
-        pointerType: pointerStart.pointerType,
-        durationMs,
+  addCaptureListener("pointerup", (event) => {
+    if (!takeEvent(event) || !recording || replaying || !pointerStart || event.pointerId !== pointerStart.pointerId) return;
+    const endedPoint = eventPoint(event);
+    const distance = pointDistance(pointerStart.point, endedPoint);
+    const durationMs = Math.round(performance.now() - pointerStart.startedAt);
+    const base = {
+      element: pointerStart.element,
+      pointerType: pointerStart.pointerType,
+      durationMs,
+    };
+    if (distance >= DRAG_DISTANCE_PX) {
+      suppressClickUntil = performance.now() + 350;
+      const dragEvent = {
+        kind: "drag",
+        ...base,
+        targetElement: targetMetaFromEvent(event),
+        startX: pointerStart.point.x,
+        startY: pointerStart.point.y,
+        endX: endedPoint.x,
+        endY: endedPoint.y,
+        startOffsetX: pointerStart.localPoint?.offsetX,
+        startOffsetY: pointerStart.localPoint?.offsetY,
+        elementWidth: pointerStart.localPoint?.width,
+        elementHeight: pointerStart.localPoint?.height,
+        deltaX: endedPoint.x - pointerStart.point.x,
+        deltaY: endedPoint.y - pointerStart.point.y,
       };
-      if (distance >= DRAG_DISTANCE_PX) {
-        suppressClickUntil = performance.now() + 350;
-        const dragEvent = {
-          kind: "drag",
-          ...base,
-          targetElement: targetMetaFromEvent(event),
-          startX: pointerStart.point.x,
-          startY: pointerStart.point.y,
-          endX: endedPoint.x,
-          endY: endedPoint.y,
-          startOffsetX: pointerStart.localPoint?.offsetX,
-          startOffsetY: pointerStart.localPoint?.offsetY,
-          elementWidth: pointerStart.localPoint?.width,
-          elementHeight: pointerStart.localPoint?.height,
-          deltaX: endedPoint.x - pointerStart.point.x,
-          deltaY: endedPoint.y - pointerStart.point.y,
-        };
-        const sortableBefore = pointerStart.sortable;
-        setTimeout(() => {
-          const sortable = sortableAfter(sortableBefore);
-          send(sortable ? { ...dragEvent, sortable } : dragEvent);
-        }, 120);
-      } else if (durationMs >= LONG_PRESS_MS) {
-        suppressClickUntil = performance.now() + 350;
-        send({
-          kind: "long-press",
-          ...base,
-          x: endedPoint.x,
-          y: endedPoint.y,
-        });
-      }
-      pointerStart = null;
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "pointercancel",
-    () => {
-      pointerStart = null;
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "contextmenu",
-    (event) => {
-      if (!recording || replaying) return;
-      const meta = targetMetaFromEvent(event);
-      if (!meta) return;
-      const point = eventPoint(event);
-      send({ kind: "context-menu", element: meta, x: point.x, y: point.y });
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "dblclick",
-    (event) => {
-      if (!recording || replaying) return;
-      const meta = targetMetaFromEvent(event);
-      if (!meta) return;
-      const point = eventPoint(event);
-      send({ kind: "double-click", element: meta, x: point.x, y: point.y });
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "keydown",
-    (event) => {
-      if (!recording || replaying || !shouldRecordKey(event)) return;
+      const sortableBefore = pointerStart.sortable;
+      setTimeout(() => {
+        const sortable = sortableAfter(sortableBefore);
+        send(sortable ? { ...dragEvent, sortable } : dragEvent);
+      }, 120);
+    } else if (durationMs >= LONG_PRESS_MS) {
+      suppressClickUntil = performance.now() + 350;
       send({
-        kind: "key",
-        key: event.key,
-        code: event.code,
-        ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey,
-        altKey: event.altKey,
-        shiftKey: event.shiftKey,
+        kind: "long-press",
+        ...base,
+        x: endedPoint.x,
+        y: endedPoint.y,
       });
-    },
-    true,
-  );
+    }
+    pointerStart = null;
+  });
 
-  document.addEventListener(
-    "input",
-    (event) => {
-      if (replaying || !isInputLike(event.target)) return;
+  addCaptureListener("pointercancel", (event) => {
+    if (!takeEvent(event)) return;
+    pointerStart = null;
+  });
+
+  addCaptureListener("contextmenu", (event) => {
+    if (!takeEvent(event) || !recording || replaying) return;
+    const meta = targetMetaFromEvent(event);
+    if (!meta) return;
+    const point = eventPoint(event);
+    send({ kind: "context-menu", element: meta, x: point.x, y: point.y });
+  });
+
+  addCaptureListener("dblclick", (event) => {
+    if (!takeEvent(event) || !recording || replaying) return;
+    const meta = targetMetaFromEvent(event);
+    if (!meta) return;
+    const point = eventPoint(event);
+    send({ kind: "double-click", element: meta, x: point.x, y: point.y });
+  });
+
+  addCaptureListener("keydown", (event) => {
+    if (!takeEvent(event) || !recording || replaying || !shouldRecordKey(event)) return;
+    send({
+      kind: "key",
+      key: event.key,
+      code: event.code,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+    });
+  });
+
+  addCaptureListener("input", (event) => {
+    if (!takeEvent(event) || replaying || !isInputLike(event.target)) return;
+    const target = event.target;
+    if (!recording) {
+      syncRecordingState(() => recordInput(target, "input"));
+      return;
+    }
+    clearTimeout(inputTimers.get(target));
+    inputTimers.set(target, setTimeout(() => recordInput(target, "input"), 350));
+  });
+
+  addCaptureListener("change", (event) => {
+    if (!takeEvent(event) || replaying || !isInputLike(event.target)) return;
+    if (!recording) {
       const target = event.target;
-      if (!recording) {
-        syncRecordingState(() => recordInput(target, "input"));
-        return;
-      }
-      clearTimeout(inputTimers.get(target));
-      inputTimers.set(target, setTimeout(() => recordInput(target, "input"), 350));
-    },
-    true,
-  );
+      syncRecordingState(() => recordInput(target, "change"));
+      return;
+    }
+    clearTimeout(inputTimers.get(event.target));
+    recordInput(event.target, "change");
+  });
 
-  document.addEventListener(
-    "change",
-    (event) => {
-      if (replaying || !isInputLike(event.target)) return;
-      if (!recording) {
-        const target = event.target;
-        syncRecordingState(() => recordInput(target, "change"));
-        return;
-      }
-      clearTimeout(inputTimers.get(event.target));
-      recordInput(event.target, "change");
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "submit",
-    (event) => {
-      if (!recording || replaying) return;
-      const meta = selectorMeta(event.target);
-      send({ kind: "submit", element: meta });
-    },
-    true,
-  );
+  addCaptureListener("submit", (event) => {
+    if (!takeEvent(event) || !recording || replaying) return;
+    const meta = selectorMeta(event.target);
+    send({ kind: "submit", element: meta });
+  });
 
   window.addEventListener(
     "scroll",

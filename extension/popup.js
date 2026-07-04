@@ -151,7 +151,7 @@ function renderRecording() {
     recorderState.textContent = `${recording.eventCount || 0} events`;
     recorderDetail.textContent = `${shortSessionId(recording.sessionId)} · ${
       recording.title || recording.url || "当前标签页"
-    }`;
+    } · ${recording.frameCount || 0} frames`;
     recorderSecondary.hidden = true;
     return;
   }

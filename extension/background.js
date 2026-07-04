@@ -1013,6 +1013,19 @@ function recordingStatus(item) {
   };
 }
 
+function upsertRecordingFrame(item, frame) {
+  if (!item || !Number.isInteger(frame?.frameId)) return;
+  if (!Array.isArray(item.frames)) item.frames = [];
+  const existingIndex = item.frames.findIndex(
+    (entry) => entry.frameId === frame.frameId,
+  );
+  if (existingIndex >= 0) {
+    item.frames[existingIndex] = { ...item.frames[existingIndex], ...frame };
+  } else {
+    item.frames.push(frame);
+  }
+}
+
 async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
   const targetTabId = await resolveRecordingTabId(tabId);
   const tab = await chrome.tabs.get(targetTabId);
@@ -1780,6 +1793,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     frameUrl: sender.url || message.event?.url,
   };
   recording.events.push(event);
+  upsertRecordingFrame(recording, {
+    frameId: sender.frameId ?? 0,
+    url: sender.url || message.event?.url,
+    ok: true,
+    response: {
+      url: sender.url || message.event?.url,
+      title: message.event?.title,
+      frameContext: message.event?.frameContext,
+    },
+  });
   if ((sender.frameId ?? 0) === 0) {
     if (message.event?.url) recording.url = message.event.url;
     if (message.event?.title) recording.title = message.event.title;
@@ -1803,7 +1826,7 @@ async function attachRecordingToFrame(tabId, frameId, url) {
   if (!recording || !isDebuggableUrl(url)) return;
   try {
     await injectRecorderIntoFrames(tabId, frameId);
-    await chrome.tabs.sendMessage(
+    const response = await chrome.tabs.sendMessage(
       tabId,
       {
         type: "tabworks-recording-start",
@@ -1811,6 +1834,12 @@ async function attachRecordingToFrame(tabId, frameId, url) {
       },
       { frameId },
     );
+    upsertRecordingFrame(recording, {
+      frameId,
+      url: response?.url || url,
+      ok: true,
+      response,
+    });
   } catch {
     /* frame 可能还没注入 content script，content script 初始化时还会主动 sync */
   }
