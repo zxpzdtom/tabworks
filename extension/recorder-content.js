@@ -844,8 +844,8 @@
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
     replayCursor.innerHTML = `
       <div class="tw-replay-cursor-glow"></div>
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 20 20" aria-hidden="true">
-        <path class="tw-replay-cursor-fill" d="M5.28 3.76C4.67 3.32 3.9 3.95 4.17 4.66L8.86 17.05C9.17 17.88 10.34 17.87 10.63 17.03L11.72 13.86C11.91 13.31 12.57 13.09 13.05 13.42L16.21 15.6C16.91 16.08 17.75 15.22 17.25 14.54L6.66 4.8C6.27 4.45 5.75 4.09 5.28 3.76Z" />
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 24 24" aria-hidden="true">
+        <path class="tw-replay-cursor-fill" d="M5.35 4.25C4.78 3.78 3.98 4.35 4.21 5.05L8.58 18.36C8.83 19.13 9.9 19.17 10.2 18.42L11.78 14.48C11.98 13.98 12.58 13.79 13.03 14.08L16.88 16.58C17.55 17.01 18.31 16.15 17.82 15.52L5.35 4.25Z" />
       </svg>
       <div class="tw-replay-cursor-ring"></div>
     `;
@@ -855,8 +855,8 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
@@ -865,30 +865,30 @@
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-glow {
   position: absolute;
-  left: -13px;
-  top: -12px;
-  width: 40px;
-  height: 40px;
+  left: -14px;
+  top: -13px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(70, 160, 255, .28) 0%, rgba(88, 171, 255, .16) 36%, rgba(88, 171, 255, 0) 72%);
-  filter: blur(2.5px);
+  background: radial-gradient(circle, rgba(75, 166, 255, .3) 0%, rgba(94, 178, 255, .16) 38%, rgba(94, 178, 255, 0) 74%);
+  filter: blur(3px);
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
   position: relative;
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   overflow: visible;
-  transform: rotate(-4deg);
-  transform-origin: 5px 5px;
+  transform: rotate(-8deg);
+  transform-origin: 6px 6px;
   filter:
-    drop-shadow(0 1px 1px rgba(15, 23, 42, .34))
-    drop-shadow(0 0 4px rgba(66, 154, 255, .46));
+    drop-shadow(0 1px 1px rgba(0, 0, 0, .36))
+    drop-shadow(0 0 4px rgba(63, 153, 255, .42));
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-fill {
-  fill: #040609;
+  fill: #05070a;
   stroke: #fff;
-  stroke-width: 1.75;
+  stroke-width: 2.05;
   stroke-linecap: round;
   stroke-linejoin: round;
   paint-order: stroke fill;
