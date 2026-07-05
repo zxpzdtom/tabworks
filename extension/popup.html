@@ -6,275 +6,278 @@
         <style>
             :root {
                 color-scheme: light;
-                --bg: #f3f6fa;
-                --panel: #ffffff;
-                --ink: #151922;
+                --bg: #f7f9fc;
+                --surface: #ffffff;
+                --ink: #101828;
                 --muted: #667085;
-                --soft: #98a2b3;
-                --line: #e2e7ef;
-                --line-strong: #d5dbe5;
-                --blue: #2563eb;
-                --blue-ink: #1746a2;
-                --blue-soft: #eaf1ff;
+                --faint: #98a2b3;
+                --line: #e6ebf1;
                 --green: #12805c;
-                --green-soft: #e7f6ef;
-                --amber: #b7791f;
-                --amber-soft: #fff4df;
-                --red: #c2413a;
-                --red-soft: #fff0ee;
-                --control-shadow:
-                    0 0 0 1px rgba(15, 23, 42, 0.08),
-                    0 1px 2px rgba(15, 23, 42, 0.07);
-                --lift-shadow:
-                    0 0 0 1px rgba(15, 23, 42, 0.06),
-                    0 8px 22px rgba(15, 23, 42, 0.08);
+                --green-soft: #e8f7f0;
+                --green-line: #b9e7d2;
+                --blue: #2563eb;
+                --blue-deep: #1746bb;
+                --red: #f04438;
+                --red-soft: #fff1ef;
+                --shadow:
+                    0 0 0 1px rgba(16, 24, 40, 0.06),
+                    0 14px 34px rgba(16, 24, 40, 0.08);
+                --shadow-soft:
+                    0 0 0 1px rgba(16, 24, 40, 0.06),
+                    0 4px 14px rgba(16, 24, 40, 0.06);
             }
 
             * {
                 box-sizing: border-box;
             }
 
-            html {
+            html,
+            body {
+                width: 360px;
+                min-width: 360px;
+                max-width: 360px;
+                height: 600px;
+                min-height: 600px;
+                max-height: 600px;
+                margin: 0;
+                overflow: hidden;
+                background: var(--bg);
                 -webkit-font-smoothing: antialiased;
-                -moz-osx-font-smoothing: grayscale;
             }
 
             body {
-                width: 356px;
-                margin: 0;
+                position: fixed;
+                inset: 0;
                 color: var(--ink);
-                background: var(--bg);
                 font-family:
-                    -apple-system, BlinkMacSystemFont, "PingFang SC",
-                    "Helvetica Neue", Arial, sans-serif;
+                    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+                    "PingFang SC", "Helvetica Neue", Arial, sans-serif;
                 font-size: 12px;
             }
 
-            button {
+            button,
+            input {
                 font: inherit;
             }
 
-            code,
-            .mono {
-                font-family: "SF Mono", Menlo, Consolas, monospace;
-                font-variant-numeric: tabular-nums;
+            [hidden] {
+                display: none !important;
             }
 
-            .shell {
-                padding: 0;
-            }
-
-            .frame {
+            .popup {
+                position: relative;
+                width: 360px;
+                height: 600px;
                 overflow: hidden;
-                border-radius: 0;
-                background: var(--panel);
-                box-shadow: none;
+                contain: strict;
+                background:
+                    radial-gradient(circle at 84% 4%, rgba(18, 128, 92, 0.12), transparent 24%),
+                    linear-gradient(180deg, #ffffff 0%, #fbfcfe 42%, #f5f7fb 100%);
             }
 
             .topbar {
+                position: absolute;
+                left: 16px;
+                top: 17px;
+                width: 328px;
+                height: 64px;
                 display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                gap: 12px;
+                grid-template-columns: 50px minmax(0, 1fr) auto;
                 align-items: center;
-                min-height: 58px;
-                padding: 13px 16px 12px;
-                border-bottom: 1px solid var(--line);
-                background: #ffffff;
+                gap: 12px;
+            }
+
+            .brand-mark {
+                width: 50px;
+                height: 50px;
+                border-radius: 15px;
+                display: block;
+                object-fit: cover;
+                box-shadow: var(--shadow-soft);
             }
 
             .brand {
                 min-width: 0;
+                padding-top: 1px;
             }
 
             .brand h1 {
                 margin: 0;
-                font-size: 17px;
-                line-height: 1.15;
-                letter-spacing: 0;
-            }
-
-            .brand p {
-                margin: 4px 0 0;
-                color: var(--muted);
-                font-size: 11.5px;
-                line-height: 1.25;
                 overflow: hidden;
+                font-size: 20px;
+                line-height: 1.08;
+                letter-spacing: 0;
                 text-overflow: ellipsis;
                 white-space: nowrap;
             }
 
+            .brand p {
+                margin: 6px 0 0;
+                overflow: hidden;
+                color: var(--muted);
+                font-size: 11.5px;
+                line-height: 1.2;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .top-actions {
+                display: grid;
+                gap: 7px;
+                justify-items: end;
+                align-self: start;
+                padding-top: 4px;
+            }
+
             .pill {
-                min-height: 31px;
+                height: 30px;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
                 gap: 7px;
-                padding: 0 11px;
+                padding: 0 12px;
                 border-radius: 999px;
-                color: var(--muted);
-                background: #fff;
-                box-shadow: var(--control-shadow);
-                white-space: nowrap;
+                color: var(--green);
+                background: rgba(232, 247, 240, 0.94);
+                box-shadow: inset 0 0 0 1px var(--green-line);
                 font-size: 12px;
-                font-variant-numeric: tabular-nums;
+                font-weight: 760;
+                white-space: nowrap;
             }
 
-            .dot {
-                width: 7px;
-                height: 7px;
+            .dot,
+            .rec-dot {
+                width: 8px;
+                height: 8px;
                 border-radius: 50%;
-                background: var(--soft);
+                background: var(--faint);
             }
 
             .dot.connected {
                 background: var(--green);
+                box-shadow: 0 0 0 4px rgba(18, 128, 92, 0.12);
             }
 
             .dot.connecting {
-                background: var(--amber);
+                background: #b7791f;
+                box-shadow: 0 0 0 4px rgba(183, 121, 31, 0.13);
             }
 
             .dot.disconnected {
                 background: var(--red);
+                box-shadow: 0 0 0 4px rgba(240, 68, 56, 0.12);
             }
 
-            .status {
+            .bridge,
+            .recorder,
+            .settings {
+                position: absolute;
+                left: 16px;
+                width: 328px;
+                background: rgba(255, 255, 255, 0.96);
+                box-shadow: var(--shadow);
+                overflow: hidden;
+            }
+
+            .bridge {
+                top: 92px;
+                height: 148px;
+                border-radius: 18px;
                 display: grid;
-                gap: 10px;
-                padding: 13px 16px 14px;
-                border-bottom: 1px solid var(--line);
-                background: #fbfcfe;
+                grid-template-rows: 72px 51px 25px;
             }
 
             .status-head {
                 display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
+                grid-template-columns: 48px minmax(0, 1fr) auto;
+                align-items: center;
                 gap: 12px;
-                align-items: start;
+                padding: 14px 12px;
+            }
+
+            .bridge-icon {
+                width: 42px;
+                height: 42px;
+                display: grid;
+                place-items: center;
+                border-radius: 13px;
+                color: var(--green);
+                background: var(--green-soft);
+                font-size: 22px;
+                font-weight: 800;
             }
 
             .status-title {
                 display: block;
-                font-size: 14px;
-                line-height: 1.25;
+                overflow: hidden;
+                font-size: 15.5px;
+                line-height: 1.18;
+                text-overflow: ellipsis;
+                white-space: nowrap;
             }
 
             .status-detail {
-                display: block;
-                margin-top: 4px;
+                display: -webkit-box;
+                margin-top: 5px;
+                overflow: hidden;
                 color: var(--muted);
-                font-size: 11.5px;
-                line-height: 1.45;
-                text-wrap: pretty;
+                font-size: 11px;
+                line-height: 1.25;
+                -webkit-box-orient: vertical;
+                -webkit-line-clamp: 2;
             }
 
             .endpoint {
-                color: var(--soft);
+                max-width: 96px;
+                height: 27px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0 8px;
+                border-radius: 9px;
+                color: #475467;
+                background: #f7f9fc;
+                box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.08);
+                font-family: "SF Mono", Menlo, Consolas, monospace;
                 font-size: 10px;
-                line-height: 17px;
-                text-align: right;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
             }
 
             .service-tools {
-                display: none;
-                grid-template-columns: minmax(0, 1fr) auto;
-                gap: 8px;
-                align-items: center;
-                min-height: 34px;
-                padding: 8px 8px 8px 11px;
-                border-radius: 12px;
-                color: #0f5138;
-                background: var(--green-soft);
-            }
-
-            .service-tools.visible {
                 display: grid;
-                color: #0f5138;
-                background: var(--green-soft);
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: center;
+                gap: 10px;
+                padding: 8px 14px;
+                border-top: 1px solid var(--line);
+                border-bottom: 1px solid var(--line);
+                background: rgba(255, 255, 255, 0.75);
             }
 
             .service-tools span {
                 min-width: 0;
                 overflow: hidden;
+                color: var(--muted);
+                font-size: 12px;
                 text-overflow: ellipsis;
                 white-space: nowrap;
-                font-size: 11.5px;
             }
 
-            .actions {
-                display: none;
+            .service-tools.visible span {
+                color: var(--green);
             }
 
-            .btn {
-                min-height: 34px;
-                border: 0;
-                border-radius: 10px;
-                padding: 0 12px;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                gap: 6px;
-                color: var(--ink);
-                background: #eef2f7;
-                box-shadow: var(--control-shadow);
-                cursor: pointer;
-                transition-property: background-color, box-shadow, color, transform, opacity;
-                transition-duration: 150ms;
-                transition-timing-function: ease-out;
-                white-space: nowrap;
-            }
-
-            .btn:hover {
-                background: #e7edf5;
-                box-shadow:
-                    0 0 0 1px rgba(15, 23, 42, 0.1),
-                    0 2px 6px rgba(15, 23, 42, 0.1);
-            }
-
-            .btn:active {
-                transform: scale(0.96);
-            }
-
-            .btn.primary {
-                color: #fff;
-                background: var(--blue);
-            }
-
-            .btn.primary:hover {
-                background: #1d56d8;
-            }
-
-            .btn.danger {
-                color: #fff;
-                background: var(--red);
-            }
-
-            .btn.danger:hover {
-                background: #ad332d;
-            }
-
-            .btn:disabled {
-                cursor: default;
-                opacity: 1;
-                transform: none;
-            }
-
-            .btn:disabled:hover {
-                box-shadow: var(--control-shadow);
-            }
-
-            .btn.danger:disabled {
-                color: #94a3b8;
-                background: #edf2f7;
-            }
-
-            .btn.small {
-                min-height: 26px;
-                min-width: 48px;
-                padding: 0 8px;
-                border-radius: 8px;
-                color: #0f5138;
-                background: #fff;
+            .service-tools span::before {
+                content: "";
+                width: 12px;
+                height: 12px;
+                display: inline-block;
+                margin: 0 9px 0 0;
+                border-radius: 50%;
+                vertical-align: -2px;
+                background: var(--green);
+                box-shadow: inset 0 0 0 3px #fff;
             }
 
             .meta-row {
@@ -282,9 +285,11 @@
                 align-items: center;
                 justify-content: space-between;
                 gap: 10px;
-                color: var(--muted);
-                font-size: 11px;
-                line-height: 1.3;
+                padding: 0 14px;
+                color: var(--faint);
+                font-size: 10.5px;
+                line-height: 1;
+                font-variant-numeric: tabular-nums;
             }
 
             .meta-row span {
@@ -295,217 +300,334 @@
             }
 
             .recorder {
+                top: 256px;
+                height: 214px;
+                border-radius: 18px;
+                padding: 14px;
                 display: grid;
+                grid-template-rows: 28px minmax(0, 1fr);
                 gap: 10px;
-                padding: 13px 16px 15px;
-                border-bottom: 1px solid var(--line);
-                background: #f7f9fc;
             }
 
-            .recorder-card {
-                display: grid;
-                gap: 10px;
-                padding: 13px;
-                border-radius: 16px;
-                background: #ffffff;
-                box-shadow: var(--lift-shadow);
-            }
-
-            .recorder-head {
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                gap: 10px;
-                align-items: center;
-            }
-
-            .recorder-title {
+            .recorder-bar {
                 display: flex;
                 align-items: center;
-                gap: 7px;
+                justify-content: space-between;
+                gap: 10px;
+            }
+
+            .recorder-title-row {
+                display: inline-flex;
+                align-items: center;
+                gap: 9px;
                 min-width: 0;
             }
 
-            .recorder-title strong {
-                font-size: 13px;
-                line-height: 1.2;
+            .recorder-title-row h2 {
+                margin: 0;
+                font-size: 18px;
+                line-height: 1;
+                letter-spacing: 0;
             }
 
             .rec-dot {
                 width: 8px;
                 height: 8px;
-                border-radius: 50%;
-                background: var(--soft);
+                background: var(--faint);
             }
 
             .rec-dot.active {
                 background: var(--red);
-                box-shadow: 0 0 0 4px rgba(194, 65, 58, 0.12);
+                box-shadow: 0 0 0 4px rgba(240, 68, 56, 0.1);
             }
 
             .recorder-state {
-                color: var(--muted);
-                min-height: 22px;
+                min-width: 73px;
+                height: 28px;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                padding: 0 8px;
+                padding: 0 10px;
                 border-radius: 999px;
-                background: #f1f5f9;
-                font-size: 10.5px;
+                color: #667085;
+                background: #f2f4f7;
+                font-family: "SF Mono", Menlo, Consolas, monospace;
+                font-size: 11px;
                 font-variant-numeric: tabular-nums;
                 white-space: nowrap;
             }
 
-            .recorder-detail {
+            .recorder-card {
+                min-height: 0;
+                display: grid;
+                grid-template-rows: 60px 84px;
+                gap: 8px;
+                padding: 0;
+                border-radius: 16px;
+                background: #fff;
+                box-shadow: none;
+            }
+
+            .recorder-copy {
+                display: grid;
+                grid-template-columns: 38px minmax(0, 1fr);
+                align-items: center;
+                gap: 12px;
+                min-width: 0;
+                padding: 0 2px;
+            }
+
+            .record-orb {
+                width: 34px;
+                height: 34px;
+                display: grid;
+                place-items: center;
+                border-radius: 50%;
+                background: var(--red-soft);
+                box-shadow: inset 0 0 0 1px rgba(240, 68, 56, 0.18);
+            }
+
+            .record-orb::before {
+                content: "";
+                width: 16px;
+                height: 16px;
+                border-radius: 50%;
+                background: var(--red);
+                box-shadow: 0 0 0 6px rgba(240, 68, 56, 0.1);
+            }
+
+            .recorder-copy strong {
+                display: block;
+                overflow: hidden;
+                font-size: 15.5px;
+                line-height: 1.2;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .recorder-copy p {
+                display: -webkit-box;
+                margin: 6px 0 0;
+                overflow: hidden;
                 color: var(--muted);
-                font-size: 11.5px;
-                line-height: 1.45;
-                text-wrap: pretty;
+                font-size: 11px;
+                line-height: 1.35;
+                -webkit-box-orient: vertical;
+                -webkit-line-clamp: 2;
             }
 
             .recorder-actions {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 7px;
-            }
-
-            .recorder-actions .btn {
-                min-height: 38px;
+                gap: 8px;
             }
 
             .recorder-secondary {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 7px;
+                display: contents;
             }
 
-            .recorder-secondary[hidden] {
-                display: none;
+            .popup.is-ready .recorder-card,
+            .popup.is-recording .recorder-card {
+                grid-template-rows: minmax(0, 1fr) 42px;
             }
 
-            .recorder-copy {
-                min-height: 36px;
-                justify-self: stretch;
-                color: var(--blue);
-                background: #fff;
-            }
-
-            .recorder-copy[hidden] {
-                display: none;
-            }
-
-            .section {
-                padding: 10px 13px 11px;
-                border-bottom: 1px solid var(--line);
-            }
-
-            .section-head {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 10px;
-                margin-bottom: 0;
-            }
-
-            .head-actions {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-            }
-
-            .section-title {
-                margin: 0;
-                color: #5b6678;
-                font-size: 10px;
-                font-weight: 800;
-                letter-spacing: 0.09em;
-                line-height: 1;
-                text-transform: uppercase;
-            }
-
-            .text-link {
-                min-height: 28px;
-                border: 0;
-                border-radius: 8px;
-                padding: 0 7px;
-                color: var(--blue);
-                background: transparent;
-                cursor: pointer;
-                transition-property: background-color, transform;
-                transition-duration: 150ms;
-                transition-timing-function: ease-out;
-            }
-
-            .text-link:hover {
-                background: var(--blue-soft);
-            }
-
-            .text-link:active {
-                transform: scale(0.96);
+            .popup.is-ready #recorder-start,
+            .popup.is-recording #recorder-stop,
+            .popup.is-saved #recorder-start {
+                grid-column: 1 / -1;
             }
 
             .settings {
+                top: 482px;
+                height: 104px;
+                border-radius: 18px;
                 display: grid;
-                gap: 2px;
-                padding: 9px 10px 10px;
-                background: #ffffff;
+                grid-template-rows: 1fr 1fr;
             }
 
             .switch-row {
-                min-height: 38px;
                 display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                gap: 12px;
+                grid-template-columns: 42px minmax(0, 1fr) auto;
                 align-items: center;
-                padding: 5px 6px 5px 9px;
-                border-radius: 12px;
+                gap: 11px;
+                padding: 9px 14px;
+                border-bottom: 1px solid var(--line);
             }
 
-            .switch-row:hover {
-                background: #f7f9fc;
+            .switch-row:last-child {
+                border-bottom: 0;
             }
 
-            .switch-label {
+            .switch-icon {
+                width: 32px;
+                height: 32px;
                 display: grid;
-                gap: 2px;
+                place-items: center;
+                border-radius: 10px;
+                color: var(--green);
+                background: var(--green-soft);
+            }
+
+            .switch-icon svg {
+                width: 21px;
+                height: 21px;
+                display: block;
+                overflow: visible;
+                fill: none;
+                stroke: currentColor;
+                stroke-width: 2.1;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+            .switch-copy {
                 min-width: 0;
             }
 
-            .switch-label strong {
-                font-size: 12px;
-                line-height: 1.2;
+            .switch-copy strong {
+                display: block;
+                font-size: 14px;
+                line-height: 1.15;
             }
 
-            .switch-label span {
-                color: var(--muted);
-                font-size: 10px;
-                line-height: 1.35;
+            .switch-copy span {
+                display: block;
+                margin-top: 4px;
                 overflow: hidden;
+                color: var(--muted);
+                font-size: 11px;
+                line-height: 1.2;
                 text-overflow: ellipsis;
                 white-space: nowrap;
             }
 
+            .btn {
+                min-height: 38px;
+                border: 0;
+                border-radius: 11px;
+                padding: 0 12px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 7px;
+                color: var(--ink);
+                background: #fff;
+                box-shadow: var(--shadow-soft);
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 760;
+                line-height: 1;
+                white-space: nowrap;
+                transition-property: transform, background-color, box-shadow, color, opacity;
+                transition-duration: 150ms;
+                transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+            }
+
+            .btn:hover:not(:disabled) {
+                background: #f9fbff;
+                box-shadow:
+                    0 0 0 1px rgba(16, 24, 40, 0.08),
+                    0 8px 18px rgba(16, 24, 40, 0.1);
+            }
+
+            .btn:active:not(:disabled),
+            .toggle input:active + .toggle-track {
+                transform: scale(0.96);
+            }
+
+            .btn:focus-visible,
+            .toggle input:focus-visible + .toggle-track {
+                outline: 2px solid rgba(37, 99, 235, 0.65);
+                outline-offset: 2px;
+            }
+
+            .btn:disabled {
+                cursor: default;
+                color: #98a2b3;
+                background: #f2f4f7;
+                opacity: 1;
+                transform: none;
+            }
+
+            .btn.primary {
+                color: #fff;
+                background: linear-gradient(180deg, #3473ff, var(--blue));
+                box-shadow:
+                    0 0 0 1px rgba(37, 99, 235, 0.16),
+                    0 10px 20px rgba(37, 99, 235, 0.24);
+            }
+
+            .btn.primary:hover:not(:disabled) {
+                background: linear-gradient(180deg, #2563eb, var(--blue-deep));
+            }
+
+            .btn.danger {
+                color: #fff;
+                background: linear-gradient(180deg, #f97066, var(--red));
+                box-shadow:
+                    0 0 0 1px rgba(240, 68, 56, 0.16),
+                    0 10px 20px rgba(240, 68, 56, 0.18);
+            }
+
+            .btn.danger:hover:not(:disabled) {
+                background: linear-gradient(180deg, #f04438, #b9382d);
+            }
+
+            .btn.service {
+                min-width: 84px;
+                min-height: 34px;
+                border-radius: 10px;
+                color: var(--green);
+                background: #fff;
+                box-shadow: inset 0 0 0 1px var(--green-line);
+            }
+
+            .btn.service:disabled {
+                color: #98a2b3;
+                background: #f2f4f7;
+                box-shadow: inset 0 0 0 1px #e4e7ec;
+            }
+
+            .btn.ghost {
+                min-height: 24px;
+                padding: 0 6px;
+                border-radius: 8px;
+                color: var(--muted);
+                background: transparent;
+                box-shadow: none;
+                font-size: 11px;
+                font-weight: 650;
+            }
+
+            .btn.ghost:hover:not(:disabled) {
+                color: var(--ink);
+                background: rgba(242, 244, 247, 0.8);
+                box-shadow: none;
+            }
+
             .toggle {
                 position: relative;
-                width: 40px;
-                height: 24px;
+                width: 48px;
+                height: 30px;
                 flex: 0 0 auto;
             }
 
             .toggle input {
-                width: 0;
-                height: 0;
+                position: absolute;
+                inset: 0;
+                margin: 0;
                 opacity: 0;
+                cursor: pointer;
             }
 
             .toggle-track {
                 position: absolute;
                 inset: 0;
                 border-radius: 999px;
-                background: #c6cedb;
-                cursor: pointer;
-                transition-property: background-color;
-                transition-duration: 160ms;
+                background: #e4e7ec;
+                box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.06);
+                transition-property: transform, background-color, box-shadow;
+                transition-duration: 150ms;
                 transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
             }
 
@@ -514,125 +636,151 @@
                 position: absolute;
                 top: 3px;
                 left: 3px;
-                width: 18px;
-                height: 18px;
+                width: 24px;
+                height: 24px;
                 border-radius: 50%;
                 background: #fff;
-                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
-                transition-property: transform;
-                transition-duration: 160ms;
+                box-shadow: 0 1px 4px rgba(16, 24, 40, 0.22);
+                transition-property: transform, box-shadow;
+                transition-duration: 150ms;
                 transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
             }
 
             .toggle input:checked + .toggle-track {
                 background: var(--green);
+                box-shadow: inset 0 0 0 1px rgba(18, 128, 92, 0.14);
             }
 
             .toggle input:checked + .toggle-track::after {
-                transform: translateX(16px);
+                transform: translateX(18px);
+                box-shadow: 0 1px 4px rgba(16, 24, 40, 0.28);
             }
         </style>
     </head>
     <body>
-        <main class="shell">
-            <section class="frame" aria-label="TabWorks Bridge">
-                <header class="topbar">
-                    <div class="brand">
-                        <h1>TabWorks Bridge</h1>
-                        <p>Chrome 自动化扩展</p>
-                    </div>
+        <main class="popup is-ready" aria-label="TabWorks Bridge">
+            <header class="topbar">
+                <img class="brand-mark" src="icons/icon128.png" alt="" aria-hidden="true" />
+                <div class="brand">
+                    <h1>TabWorks Bridge</h1>
+                    <p>Chrome 自动化扩展</p>
+                </div>
+                <div class="top-actions">
                     <div class="pill" aria-live="polite">
-                        <span class="dot disconnected" id="dot"></span>
-                        <span id="status">检查中</span>
+                        <span class="dot connected" id="dot"></span>
+                        <span id="status">已连接</span>
                     </div>
-                </header>
+                    <button class="btn ghost" id="guide-btn" type="button">
+                        接口说明
+                    </button>
+                </div>
+            </header>
 
-                <section class="status">
-                    <div class="status-head">
+            <section class="bridge" aria-label="本地 bridge 状态">
+                <div class="status-head">
+                    <div class="bridge-icon" aria-hidden="true">◉</div>
+                    <div>
+                        <strong class="status-title" id="status-title">
+                            本地 bridge
+                        </strong>
+                        <span class="status-detail" id="status-detail">
+                            可以接收本地服务发来的浏览器自动化命令。
+                        </span>
+                    </div>
+                    <span class="endpoint" id="service-meta">localhost:9527</span>
+                </div>
+
+                <div class="service-tools visible" id="service-tools">
+                    <span>日志服务已启动</span>
+                    <button class="btn service" id="logs-btn" type="button">
+                        打开日志
+                    </button>
+                </div>
+
+                <div class="meta-row">
+                    <span id="sessions">暂无活动窗口</span>
+                    <span id="service-state">日志服务已检测到</span>
+                </div>
+            </section>
+
+            <section class="recorder" aria-label="UI 操作录制">
+                <div class="recorder-bar">
+                    <div class="recorder-title-row">
+                        <span class="rec-dot" id="recorder-dot"></span>
+                        <h2>UI Recorder</h2>
+                    </div>
+                    <span class="recorder-state" id="recorder-state">ready</span>
+                </div>
+
+                <div class="recorder-card">
+                    <div class="recorder-copy">
+                        <div class="record-orb" aria-hidden="true"></div>
                         <div>
-                            <strong class="status-title" id="status-title">
-                                正在检查连接
-                            </strong>
-                            <span class="status-detail" id="status-detail">
-                                扩展可独立查看能力，本地服务在线后会自动握手。
-                            </span>
+                            <strong id="recorder-title">准备录制当前页面</strong>
+                            <p id="recorder-detail">
+                                打开目标网页后，点开始录制；操作完成后回到这里停止。
+                            </p>
                         </div>
-                        <span class="endpoint mono" id="service-meta">extension</span>
                     </div>
 
-                    <div class="service-tools" id="service-tools">
-                        <span>日志服务未检测到</span>
-                        <button class="btn small" id="logs-btn">打开日志</button>
-                    </div>
-
-                    <div class="meta-row">
-                        <span id="sessions">暂无活动窗口</span>
-                        <span id="service-state">日志服务未检测到</span>
-                    </div>
-                </section>
-
-                <section class="recorder" aria-label="UI 操作录制">
-                    <div class="section-head">
-                        <h2 class="section-title">UI Recorder</h2>
-                        <button class="text-link" id="guide-btn">接口说明</button>
-                    </div>
-                    <div class="recorder-card">
-                        <div class="recorder-head">
-                            <div class="recorder-title">
-                                <span class="rec-dot" id="recorder-dot"></span>
-                                <strong id="recorder-title">未开始录制</strong>
-                            </div>
-                            <span class="recorder-state mono" id="recorder-state">
-                                extension
-                            </span>
-                        </div>
-                        <div class="recorder-detail" id="recorder-detail">
-                            打开目标网页后，从这里开始录制点击、输入、滚动和页面跳转。
-                        </div>
-                        <div class="recorder-actions">
-                            <button class="btn primary" id="recorder-start">
-                                开始录制
-                            </button>
-                            <button class="btn danger" id="recorder-stop" disabled>
-                                停止录制
-                            </button>
-                        </div>
+                    <div class="recorder-actions">
+                        <button class="btn primary" id="recorder-start" type="button">
+                            开始录制
+                        </button>
+                        <button class="btn danger" id="recorder-stop" type="button" hidden>
+                            停止录制
+                        </button>
                         <div class="recorder-secondary" id="recorder-secondary" hidden>
-                            <button class="btn" id="recorder-replay">
+                            <button class="btn primary" id="recorder-replay" type="button">
                                 回放录制
                             </button>
-                            <button class="btn recorder-copy" id="recorder-download">
+                            <button class="btn" id="recorder-download" type="button">
                                 下载脚本
                             </button>
                         </div>
                     </div>
-                </section>
+                </div>
+            </section>
 
-                <section class="settings" aria-label="自动化设置">
-                    <div class="switch-row">
-                        <div class="switch-label">
-                            <strong>前台模式</strong>
-                            <span>自动化窗口执行时保持可见</span>
-                        </div>
-                        <label class="toggle">
-                            <input type="checkbox" id="foreground-toggle" />
-                            <span class="toggle-track"></span>
-                        </label>
+            <section class="settings" aria-label="自动化设置">
+                <div class="switch-row">
+                    <span class="switch-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                            <rect x="4.5" y="5" width="15" height="11.5" rx="2.5"></rect>
+                            <path d="M9.2 20h5.6"></path>
+                            <path d="M12 16.5V20"></path>
+                        </svg>
+                    </span>
+                    <div class="switch-copy">
+                        <strong>前台模式</strong>
+                        <span>自动化窗口执行时保持可见</span>
                     </div>
-                    <div class="switch-row">
-                        <div class="switch-label">
-                            <strong>保留标签页</strong>
-                            <span>任务结束后不自动关闭页面</span>
-                        </div>
-                        <label class="toggle">
-                            <input type="checkbox" id="keeptab-toggle" />
-                            <span class="toggle-track"></span>
-                        </label>
+                    <label class="toggle" aria-label="前台模式">
+                        <input type="checkbox" id="foreground-toggle" />
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+                <div class="switch-row">
+                    <span class="switch-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                            <rect x="4" y="5" width="16" height="14" rx="2.3"></rect>
+                            <path d="M4 10h16"></path>
+                            <path d="M7.2 7.6h.1"></path>
+                            <path d="M10 7.6h.1"></path>
+                        </svg>
+                    </span>
+                    <div class="switch-copy">
+                        <strong>保留标签页</strong>
+                        <span>任务结束后不自动关闭页面</span>
                     </div>
-                </section>
+                    <label class="toggle" aria-label="保留标签页">
+                        <input type="checkbox" id="keeptab-toggle" />
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
             </section>
         </main>
 
-        <script src="popup.js"></script>
+        <script src="popup.js?v=image-final-2"></script>
     </body>
 </html>

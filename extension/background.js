@@ -610,6 +610,148 @@ function recordedFrameKey(event) {
   return `id:${frameId}`;
 }
 
+function sameRecordingFrame(a, b) {
+  const left = recordedFrameKey(a);
+  const right = recordedFrameKey(b);
+  if (left === right) return true;
+  return (
+    (left === "top" && right === "id:0") ||
+    (left === "id:0" && right === "top")
+  );
+}
+
+function recordingEventTime(event) {
+  const time = Date.parse(event?.at || "");
+  return Number.isFinite(time) ? time : null;
+}
+
+function orderedRecordingEvents(events = []) {
+  return events
+    .map((event, index) => ({ event, index, time: recordingEventTime(event) }))
+    .sort((a, b) => {
+      if (a.time !== null && b.time !== null && a.time !== b.time) {
+        return a.time - b.time;
+      }
+      if (a.time !== null && b.time === null) return -1;
+      if (a.time === null && b.time !== null) return 1;
+      return a.index - b.index;
+    })
+    .map((item) => item.event);
+}
+
+function isContentReplayEvent(event) {
+  return [
+    "click",
+    "input",
+    "scroll",
+    "submit",
+    "long-press",
+    "drag",
+    "double-click",
+    "context-menu",
+    "key",
+  ].includes(event?.kind);
+}
+
+function replayDelayMs(previousEvent, event, options = {}) {
+  const previousAt = recordingEventTime(previousEvent);
+  const currentAt = recordingEventTime(event);
+  if (previousAt === null || currentAt === null) return 0;
+  const delta = currentAt - previousAt;
+  if (!Number.isFinite(delta) || delta <= 0) return 0;
+  const speed = Math.max(0.1, Number(options.speed || 1));
+  const maxDelayMs = Math.max(0, Number(options.maxDelayMs ?? 2000));
+  return Math.min(delta / speed, maxDelayMs);
+}
+
+function selectorForRecordingEvent(event) {
+  const selectors = event?.element?.selectors || [];
+  return (
+    selectors.find((item) => item.unique)?.selector ||
+    event?.element?.preferredSelector ||
+    event?.sortable?.rowElement?.preferredSelector ||
+    event?.sortable?.rowElement?.selectors?.find((item) => item.unique)
+      ?.selector ||
+    ""
+  );
+}
+
+function closeNumber(a, b, tolerance = 6) {
+  const left = Number(a);
+  const right = Number(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return Math.abs(left - right) <= tolerance;
+}
+
+function sameSortableMove(a, b) {
+  if (!a?.sortable || !b?.sortable) return false;
+  if (
+    a.sortable.sourceLabel ||
+    b.sortable.sourceLabel ||
+    a.sortable.rowElement ||
+    b.sortable.rowElement
+  ) {
+    const sameSourceLabel =
+      String(a.sortable.sourceLabel || "") ===
+      String(b.sortable.sourceLabel || "");
+    const sameRowSelector =
+      selectorForRecordingEvent(a) &&
+      selectorForRecordingEvent(a) === selectorForRecordingEvent(b);
+    if (sameSourceLabel || sameRowSelector) return true;
+  }
+  return (
+    String(a.sortable.sourceLabel || "") ===
+      String(b.sortable.sourceLabel || "") &&
+    Number(a.sortable.fromIndex) === Number(b.sortable.fromIndex) &&
+    Number(a.sortable.toIndex) === Number(b.sortable.toIndex) &&
+    Number(a.sortable.moveDelta) === Number(b.sortable.moveDelta)
+  );
+}
+
+function sameDragGeometry(a, b) {
+  return (
+    closeNumber(a?.startX, b?.startX) &&
+    closeNumber(a?.startY, b?.startY) &&
+    closeNumber(a?.endX, b?.endX) &&
+    closeNumber(a?.endY, b?.endY)
+  );
+}
+
+function isDuplicateDragEvent(previous, next) {
+  if (previous?.kind !== "drag" || next?.kind !== "drag") return false;
+  const previousAt = recordingEventTime(previous);
+  const nextAt = recordingEventTime(next);
+  if (
+    previousAt !== null &&
+    nextAt !== null &&
+    Math.abs(nextAt - previousAt) > 900
+  ) {
+    return false;
+  }
+  if (!sameRecordingFrame(previous, next)) return false;
+  return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
+}
+
+function shouldSkipDuplicateRecordingEvent(recording, event) {
+  if (event?.kind !== "drag") return false;
+  const recentEvents = (recording?.events || []).slice(-8);
+  return recentEvents.some((previous) => isDuplicateDragEvent(previous, event));
+}
+
+function dedupeDragEvents(events = []) {
+  const normalized = [];
+  for (const event of events) {
+    if (
+      event?.kind === "drag" &&
+      normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event))
+    ) {
+      continue;
+    }
+    normalized.push(event);
+  }
+  return normalized;
+}
+
 async function resolveTabId(tabId, workspace) {
   if (tabId !== undefined) {
     try {
@@ -1089,13 +1231,15 @@ async function stopUiRecording(sessionId, tabId) {
     frameId: 0,
   });
   recordingTabs.delete(targetTabId);
+  const events = dedupeDragEvents(orderedRecordingEvents(item.events));
   const saved = {
     ...item,
+    events,
     url: response.primary?.url ?? item.url,
     title: response.primary?.title ?? item.title,
     frames: response.frames,
     stoppedAt: new Date().toISOString(),
-    eventCount: item.events.length,
+    eventCount: events.length,
   };
   await storageSet({ [LAST_UI_RECORDING_KEY]: saved });
   return saved;
@@ -1108,9 +1252,14 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
   const source =
     events || (saved ? saved.events : null);
   if (!source) throw new Error("没有可回放的录制");
+  const orderedSource = orderedRecordingEvents(source);
+  const replayEvents = dedupeDragEvents(
+    orderedSource.filter(isContentReplayEvent),
+  );
+  if (!replayEvents.length) throw new Error("录制中没有可回放的 UI 步骤");
   const targetTabId = await resolveRecordingTabId(tabId);
   if (options?.reloadBeforeReplay !== false) {
-    const firstEventUrl = source.find(
+    const firstEventUrl = orderedSource.find(
       (event) =>
         (event.frameId === undefined || event.frameId === 0) && event.url,
     )?.url;
@@ -1128,7 +1277,7 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     await injectRecorderIntoFrames(targetTabId);
   }
   const grouped = new Map();
-  for (const event of source) {
+  for (const event of replayEvents) {
     const key = recordedFrameKey(event);
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(event);
@@ -1139,23 +1288,49 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
     options?.frameReadyTimeoutMs,
   );
 
+  const frameIdByKey = new Map();
+  for (const [key, frameEvents] of grouped.entries()) {
+    frameIdByKey.set(key, chooseReplayFrameId(frameEvents, currentFrames));
+  }
+
+  const replayChunks = [];
+  let currentChunk = null;
+  for (const event of replayEvents) {
+    const key = recordedFrameKey(event);
+    const frameId = frameIdByKey.get(key) ?? 0;
+    if (!currentChunk || currentChunk.frameId !== frameId) {
+      currentChunk = { frameId, events: [] };
+      replayChunks.push(currentChunk);
+    }
+    currentChunk.events.push(event);
+  }
+
   const results = [];
-  for (const frameEvents of grouped.values()) {
-    const frameId = chooseReplayFrameId(frameEvents, currentFrames);
+  let previousEvent = null;
+  for (const chunk of replayChunks) {
+    const firstEvent = chunk.events[0];
+    const delay = replayDelayMs(previousEvent, firstEvent, options);
+    if (delay > 0) await sleep(delay);
     try {
-      const response = await sendMessageToTabFrame(targetTabId, frameId, {
+      const response = await sendMessageToTabFrame(targetTabId, chunk.frameId, {
         type: "tabworks-recording-replay",
-        events: frameEvents,
+        events: chunk.events,
         options: options || {},
       });
-      results.push({ frameId, ...(response || {}) });
+      results.push({
+        frameId: chunk.frameId,
+        eventCount: chunk.events.length,
+        ...(response || {}),
+      });
     } catch (err) {
       results.push({
-        frameId,
+        frameId: chunk.frameId,
+        eventCount: chunk.events.length,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    previousEvent = chunk.events[chunk.events.length - 1] || previousEvent;
   }
 
   const played = results.reduce((sum, item) => sum + (item.played || 0), 0);
@@ -1802,6 +1977,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     frameId: sender.frameId ?? 0,
     frameUrl: sender.url || message.event?.url,
   };
+  if (shouldSkipDuplicateRecordingEvent(recording, event)) return false;
   recording.events.push(event);
   upsertRecordingFrame(recording, {
     frameId: sender.frameId ?? 0,
@@ -1816,16 +1992,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if ((sender.frameId ?? 0) === 0) {
     if (message.event?.url) recording.url = message.event.url;
     if (message.event?.title) recording.title = message.event.title;
-  }
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(
-      JSON.stringify({
-        type: "recording-event",
-        sessionId: recording.sessionId,
-        tabId,
-        event,
-      }),
-    );
   }
   return false;
 });

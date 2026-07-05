@@ -227,6 +227,37 @@ function todayDate() {
   ).padStart(2, "0")}`;
 }
 
+function smoothScrollScript(targetXExpression, targetYExpression, result) {
+  return `(() => new Promise((resolve) => {
+  const requestedX = Number(${targetXExpression}) || 0;
+  const requestedY = Number(${targetYExpression}) || 0;
+  const maxX = Math.max(0, document.documentElement.scrollWidth, document.body?.scrollWidth || 0) - window.innerWidth;
+  const maxY = Math.max(0, document.documentElement.scrollHeight, document.body?.scrollHeight || 0) - window.innerHeight;
+  const targetX = Math.max(0, Math.min(requestedX, maxX));
+  const targetY = Math.max(0, Math.min(requestedY, maxY));
+  const startX = window.scrollX;
+  const startY = window.scrollY;
+  const deltaX = targetX - startX;
+  const deltaY = targetY - startY;
+  const distance = Math.hypot(deltaX, deltaY);
+  if (distance < 1) {
+    window.scrollTo(targetX, targetY);
+    resolve(${JSON.stringify(result)});
+    return;
+  }
+  const duration = Math.max(260, Math.min(900, distance * 0.55));
+  const startedAt = performance.now();
+  function tick(nowTime) {
+    const progress = Math.min(1, (nowTime - startedAt) / duration);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    window.scrollTo(startX + deltaX * eased, startY + deltaY * eased);
+    if (progress < 1) requestAnimationFrame(tick);
+    else resolve(${JSON.stringify(result)});
+  }
+  requestAnimationFrame(tick);
+}))()`;
+}
+
 function createRecordingSessionId() {
   return `ui_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1038,19 +1069,25 @@ const httpServer = http.createServer(async (req, res) => {
       const body = await parseJson(req);
       requireField(body.pageId ?? body.tabId, "pageId");
       const direction = body.direction || "down";
-      const distance = Math.abs(parseInt(String(body.distance || 3000), 10));
-      let script = `window.scrollBy(0, ${distance}); 'down'`;
-      if (direction === "up") script = `window.scrollBy(0, -${distance}); 'up'`;
-      if (direction === "top") script = `window.scrollTo(0, 0); 'top'`;
-      if (direction === "bottom")
-        script = `window.scrollTo(0, document.body.scrollHeight); 'bottom'`;
+      const rawDistance = parseInt(String(body.distance || 3000), 10);
+      const distance = Number.isFinite(rawDistance) ? Math.abs(rawDistance) : 3000;
+      let script = smoothScrollScript("window.scrollX", `window.scrollY + ${distance}`, "down");
+      if (direction === "up") script = smoothScrollScript("window.scrollX", `window.scrollY - ${distance}`, "up");
+      if (direction === "top") script = smoothScrollScript("window.scrollX", "0", "top");
+      if (direction === "bottom") {
+        script = smoothScrollScript(
+          "window.scrollX",
+          "Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)",
+          "bottom",
+        );
+      }
       const moved = await sendToExtension({
         action: "exec",
         tabId: body.pageId ?? body.tabId,
         code: script,
         workspace: body.workspace,
       });
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise((r) => setTimeout(r, 120));
       return respond(res, 200, { direction: moved || direction });
     }
 

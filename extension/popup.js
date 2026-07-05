@@ -1,4 +1,39 @@
+const isExtensionPage = location.protocol === "chrome-extension:";
+const needsChromeMock = !isExtensionPage || !globalThis.chrome?.runtime?.connect;
+const isPreviewRuntime =
+  needsChromeMock ||
+  (!isExtensionPage && location.search.includes("preview="));
+const previewRecordingState = new URLSearchParams(location.search).get(
+  "recordingState",
+);
+
+if (needsChromeMock) {
+  globalThis.chrome = {
+    runtime: {
+      connect: () => ({
+        onDisconnect: { addListener() {} },
+        onMessage: { addListener() {} },
+        postMessage() {},
+      }),
+      getURL: (path) => path,
+      sendMessage: (_message, callback) => {
+        callback?.({ ok: false, error: "Chrome runtime unavailable" });
+      },
+    },
+    storage: {
+      local: {
+        get: (_keys, callback) => callback?.({}),
+        set() {},
+      },
+    },
+    tabs: {
+      create: ({ url }) => window.open(url, "_blank", "noopener"),
+    },
+  };
+}
+
 const dot = document.getElementById("dot");
+const popupEl = document.querySelector(".popup");
 const statusEl = document.getElementById("status");
 const statusTitle = document.getElementById("status-title");
 const statusDetail = document.getElementById("status-detail");
@@ -67,7 +102,7 @@ function renderStatus(state = bridgeState) {
     setStatusVisual(
       "connected",
       "已连接",
-      "扩展已接入本地 bridge",
+      "本地 bridge",
       "可以接收本地服务发来的浏览器自动化命令。",
     );
   } else if (bridgeState.reconnecting) {
@@ -81,7 +116,7 @@ function renderStatus(state = bridgeState) {
     setStatusVisual(
       "connecting",
       "服务在线",
-      "本地日志服务在线",
+      "本地 bridge",
       "HTTP 服务可用，但扩展 WebSocket 还未完成握手。",
     );
   } else {
@@ -97,8 +132,14 @@ function renderStatus(state = bridgeState) {
   keepTabToggle.checked = bridgeState.keepTab === true;
   serviceMeta.textContent = serviceOnline ? "localhost:9527" : "extension";
   serviceTools.classList.toggle("visible", serviceOnline);
-  serviceTools.querySelector("span").textContent = "日志服务已启动";
-  logsBtn.textContent = "打开日志";
+  serviceTools.querySelector("span").textContent = serviceOnline
+    ? "日志服务已启动"
+    : "日志服务未启动";
+  logsBtn.disabled = !serviceOnline;
+  logsBtn.textContent = serviceOnline ? "打开日志" : "日志离线";
+  logsBtn.title = serviceOnline
+    ? "打开本地日志服务"
+    : "需要先启动 localhost:9527";
   serviceState.textContent = serviceOnline
     ? "日志服务已检测到"
     : "日志服务未检测到";
@@ -127,9 +168,17 @@ function shortSessionId(sessionId = "") {
 }
 
 function renderRecording() {
+  const isRecording = Boolean(recording);
+  const hasSavedRecording = Boolean(lastRecordingResult) && !recorderError;
+
   recorderDot.classList.toggle("active", Boolean(recording));
-  recorderStartBtn.disabled = Boolean(recording);
-  recorderStopBtn.disabled = !recording;
+  popupEl.classList.toggle("is-recording", isRecording);
+  popupEl.classList.toggle("is-saved", !isRecording && hasSavedRecording);
+  popupEl.classList.toggle("is-ready", !isRecording && !hasSavedRecording);
+  recorderStartBtn.hidden = isRecording;
+  recorderStopBtn.hidden = !isRecording;
+  recorderStartBtn.disabled = isRecording;
+  recorderStopBtn.disabled = !isRecording;
   recorderStartBtn.textContent = recording
     ? "录制中"
     : lastRecordingResult
@@ -170,7 +219,7 @@ function renderRecording() {
       recorderTitle.textContent = "录制已保存";
       recorderState.textContent = `${lastRecordingResult.eventCount || 0} events`;
       recorderDetail.textContent =
-        "回放会先刷新到录制起点，再按步骤执行；也可以下载为脚本。";
+        "回放会先刷新到录制起点，再按步骤执行。";
     }
     recorderSecondary.hidden = false;
     recorderReplayBtn.disabled = false;
@@ -185,6 +234,10 @@ function renderRecording() {
 }
 
 async function refreshRecordingStatus() {
+  if (isPreviewRuntime && previewRecordingState) {
+    renderRecording();
+    return;
+  }
   try {
     const data = await sendRuntimeMessage({ type: "tabworks-ui-recording-status" });
     recording = data.recording || null;
@@ -241,6 +294,7 @@ keepTabToggle.addEventListener("change", () => {
 });
 
 logsBtn.addEventListener("click", () => {
+  if (!serviceOnline) return;
   chrome.tabs.create({ url: APP_URL });
 });
 
@@ -326,13 +380,141 @@ function selectorForEvent(event) {
   );
 }
 
+function selectorForSortableEvent(event) {
+  const selectors = event?.sortable?.rowElement?.selectors || [];
+  return (
+    selectors.find((item) => item.unique)?.selector ||
+    event?.sortable?.rowElement?.preferredSelector ||
+    ""
+  );
+}
+
 function numberLiteral(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.round(number * 100) / 100 : fallback;
 }
 
+function eventTime(event) {
+  const time = Date.parse(event?.at || "");
+  return Number.isFinite(time) ? time : null;
+}
+
+function orderedEvents(events = []) {
+  return events
+    .map((event, index) => ({ event, index, time: eventTime(event) }))
+    .sort((a, b) => {
+      if (a.time !== null && b.time !== null && a.time !== b.time) {
+        return a.time - b.time;
+      }
+      if (a.time !== null && b.time === null) return -1;
+      if (a.time === null && b.time !== null) return 1;
+      return a.index - b.index;
+    })
+    .map((item) => item.event);
+}
+
+function closeNumber(a, b, tolerance = 6) {
+  const left = Number(a);
+  const right = Number(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return Math.abs(left - right) <= tolerance;
+}
+
+function sameSortableMove(a, b) {
+  if (!a?.sortable || !b?.sortable) return false;
+  if (
+    a.sortable.sourceLabel ||
+    b.sortable.sourceLabel ||
+    a.sortable.rowElement ||
+    b.sortable.rowElement
+  ) {
+    const sameSourceLabel =
+      String(a.sortable.sourceLabel || "") ===
+      String(b.sortable.sourceLabel || "");
+    const sameRowSelector =
+      selectorForEvent(a) &&
+      selectorForEvent(a) === selectorForEvent(b);
+    if (sameSourceLabel || sameRowSelector) return true;
+  }
+  return (
+    String(a.sortable.sourceLabel || "") ===
+      String(b.sortable.sourceLabel || "") &&
+    Number(a.sortable.fromIndex) === Number(b.sortable.fromIndex) &&
+    Number(a.sortable.toIndex) === Number(b.sortable.toIndex) &&
+    Number(a.sortable.moveDelta) === Number(b.sortable.moveDelta)
+  );
+}
+
+function sameDragGeometry(a, b) {
+  return (
+    closeNumber(a?.startX, b?.startX) &&
+    closeNumber(a?.startY, b?.startY) &&
+    closeNumber(a?.endX, b?.endX) &&
+    closeNumber(a?.endY, b?.endY)
+  );
+}
+
+function isDuplicateDragEvent(previous, next) {
+  if (previous?.kind !== "drag" || next?.kind !== "drag") return false;
+  const previousAt = eventTime(previous);
+  const nextAt = eventTime(next);
+  if (
+    previousAt !== null &&
+    nextAt !== null &&
+    Math.abs(nextAt - previousAt) > 900
+  ) {
+    return false;
+  }
+  return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
+}
+
+function dedupeDragEvents(events = []) {
+  const normalized = [];
+  for (const event of events) {
+    if (
+      event?.kind === "drag" &&
+      normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event))
+    ) {
+      continue;
+    }
+    normalized.push(event);
+  }
+  return normalized;
+}
+
+function smoothScrollScript(scrollX, scrollY) {
+  return `(() => new Promise((resolve) => {
+  const requestedX = ${numberLiteral(scrollX, 0)};
+  const requestedY = ${numberLiteral(scrollY, 0)};
+  const maxX = Math.max(0, document.documentElement.scrollWidth, document.body?.scrollWidth || 0) - window.innerWidth;
+  const maxY = Math.max(0, document.documentElement.scrollHeight, document.body?.scrollHeight || 0) - window.innerHeight;
+  const targetX = Math.max(0, Math.min(requestedX, maxX));
+  const targetY = Math.max(0, Math.min(requestedY, maxY));
+  const startX = window.scrollX;
+  const startY = window.scrollY;
+  const deltaX = targetX - startX;
+  const deltaY = targetY - startY;
+  const distance = Math.hypot(deltaX, deltaY);
+  if (distance < 1) {
+    window.scrollTo(targetX, targetY);
+    resolve(true);
+    return;
+  }
+  const duration = Math.max(260, Math.min(900, distance * 0.55));
+  const startedAt = performance.now();
+  function tick(nowTime) {
+    const progress = Math.min(1, (nowTime - startedAt) / duration);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    window.scrollTo(startX + deltaX * eased, startY + deltaY * eased);
+    if (progress < 1) requestAnimationFrame(tick);
+    else resolve(true);
+  }
+  requestAnimationFrame(tick);
+}))()`;
+}
+
 function normalizeEvents(events = []) {
-  const playable = events.filter((event) =>
+  const playable = dedupeDragEvents(orderedEvents(events)).filter((event) =>
     [
       "click",
       "input",
@@ -471,7 +653,7 @@ function buildDownloadedScript(recordingData) {
     } else if (event.kind === "input" && selector && !event.redacted) {
       lines.push(`  await bridge('/input', { pageId, selector: ${jsString(selector)}, text: ${JSON.stringify(event.value ?? "")} });`);
     } else if (event.kind === "scroll") {
-      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`window.scrollTo(${event.scrollX || 0}, ${event.scrollY || 0})`)} });`);
+      lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(smoothScrollScript(event.scrollX || 0, event.scrollY || 0))} });`);
     } else if (event.kind === "submit" && selector) {
       lines.push(`  await bridge('/run-js', { pageId, script: ${jsString(`document.querySelector(${JSON.stringify(selector)})?.requestSubmit?.()`)} });`);
     } else if (event.kind === "double-click" && selector) {
@@ -545,6 +727,14 @@ recorderDownloadBtn.addEventListener("click", () => {
 });
 
 async function checkViewerStatus() {
+  if (isPreviewRuntime) {
+    serviceOnline = true;
+    bridgeState = { ...bridgeState, connected: true, reconnecting: false };
+    renderStatus();
+    await refreshRecordingStatus();
+    return;
+  }
+
   try {
     const res = await fetch(STATUS_URL, { signal: AbortSignal.timeout(1500) });
     if (res.ok) {
@@ -581,3 +771,34 @@ window.addEventListener("unload", () => {
   clearInterval(sessionTimer);
   clearInterval(recordingTimer);
 });
+
+if (isPreviewRuntime) {
+  window.__tabworksPreviewSetRecording = (nextState = {}) => {
+    recording = nextState.recording || null;
+    lastRecordingResult = nextState.lastRecordingResult || null;
+    recorderError = nextState.recorderError || "";
+    renderRecording();
+  };
+
+  if (previewRecordingState === "recording") {
+    recording = {
+      sessionId: "preview-session-1234567890",
+      eventCount: 7,
+      title: "Preview page",
+      frameCount: 1,
+    };
+    lastRecordingResult = null;
+    recorderError = "";
+    renderRecording();
+  } else if (previewRecordingState === "saved") {
+    recording = null;
+    lastRecordingResult = {
+      sessionId: "preview-session-1234567890",
+      eventCount: 18,
+      title: "Preview page",
+      events: [],
+    };
+    recorderError = "";
+    renderRecording();
+  }
+}

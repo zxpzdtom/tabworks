@@ -1,5 +1,5 @@
 (() => {
-  const RECORDER_SCRIPT_VERSION = 9;
+  const RECORDER_SCRIPT_VERSION = 12;
   if (globalThis.__tabworksRecorderVersion === RECORDER_SCRIPT_VERSION) return;
   globalThis.__tabworksRecorderVersion = RECORDER_SCRIPT_VERSION;
   globalThis.__tabworksRecorderLoaded = true;
@@ -539,6 +539,7 @@
 
   function recordMainBridgeEvent(payload) {
     if (!payload || replaying) return;
+    if (payload.kind === "pointerdown" || payload.kind === "pointerup") return;
     if (!recording) {
       syncRecordingState(() => recordMainBridgeEvent(payload));
       return;
@@ -823,6 +824,45 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  function clampScrollTarget(x, y) {
+    const maxX = Math.max(
+      0,
+      document.documentElement.scrollWidth,
+      document.body?.scrollWidth || 0,
+    ) - window.innerWidth;
+    const maxY = Math.max(
+      0,
+      document.documentElement.scrollHeight,
+      document.body?.scrollHeight || 0,
+    ) - window.innerHeight;
+    return {
+      x: Math.max(0, Math.min(Number(x) || 0, maxX)),
+      y: Math.max(0, Math.min(Number(y) || 0, maxY)),
+    };
+  }
+
+  function smoothScrollTo(x, y) {
+    const target = clampScrollTarget(x, y);
+    const startX = window.scrollX;
+    const startY = window.scrollY;
+    const deltaX = target.x - startX;
+    const deltaY = target.y - startY;
+    const distance = Math.hypot(deltaX, deltaY);
+    if (distance < 1) return Promise.resolve();
+    const duration = Math.max(260, Math.min(900, distance * 0.55));
+    const startedAt = performance.now();
+    return new Promise((resolve) => {
+      function tick(nowTime) {
+        const progress = Math.min(1, (nowTime - startedAt) / duration);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(startX + deltaX * eased, startY + deltaY * eased);
+        if (progress < 1) requestAnimationFrame(tick);
+        else resolve();
+      }
+      requestAnimationFrame(tick);
+    });
+  }
+
   function selectorForEvent(event) {
     const selectors = event?.element?.selectors || [];
     return (
@@ -831,6 +871,73 @@
       selectors.find((item) => item.selector)?.selector ||
       ""
     );
+  }
+
+  function selectorForSortableEvent(event) {
+    const selectors = event?.sortable?.rowElement?.selectors || [];
+    return (
+      selectors.find((item) => item.unique)?.selector ||
+      event?.sortable?.rowElement?.preferredSelector ||
+      ""
+    );
+  }
+
+  function eventTime(event) {
+    const time = Date.parse(event?.at || "");
+    return Number.isFinite(time) ? time : null;
+  }
+
+  function closeNumber(a, b, tolerance = 6) {
+    const left = Number(a);
+    const right = Number(b);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+    return Math.abs(left - right) <= tolerance;
+  }
+
+  function sameSortableMove(a, b) {
+    if (!a?.sortable || !b?.sortable) return false;
+    if (
+      a.sortable.sourceLabel ||
+      b.sortable.sourceLabel ||
+      a.sortable.rowElement ||
+      b.sortable.rowElement
+    ) {
+      const sameSourceLabel =
+        String(a.sortable.sourceLabel || "") === String(b.sortable.sourceLabel || "");
+      const sameRowSelector =
+        selectorForEvent(a) &&
+        selectorForEvent(a) === selectorForEvent(b);
+      if (sameSourceLabel || sameRowSelector) return true;
+    }
+    return (
+      String(a.sortable.sourceLabel || "") === String(b.sortable.sourceLabel || "") &&
+      Number(a.sortable.fromIndex) === Number(b.sortable.fromIndex) &&
+      Number(a.sortable.toIndex) === Number(b.sortable.toIndex) &&
+      Number(a.sortable.moveDelta) === Number(b.sortable.moveDelta)
+    );
+  }
+
+  function sameDragGeometry(a, b) {
+    return (
+      closeNumber(a?.startX, b?.startX) &&
+      closeNumber(a?.startY, b?.startY) &&
+      closeNumber(a?.endX, b?.endX) &&
+      closeNumber(a?.endY, b?.endY)
+    );
+  }
+
+  function isDuplicateDragEvent(previous, next) {
+    if (previous?.kind !== "drag" || next?.kind !== "drag") return false;
+    const previousAt = eventTime(previous);
+    const nextAt = eventTime(next);
+    if (
+      previousAt !== null &&
+      nextAt !== null &&
+      Math.abs(nextAt - previousAt) > 900
+    ) {
+      return false;
+    }
+    return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
   }
 
   function findEventElement(event) {
@@ -865,13 +972,13 @@
   opacity: 0;
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-sprite-wrap {
-  transform: translate3d(12px, -2.5px, 0);
+  transform: translate3d(10px, 8px, 0);
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-asset {
   display: block;
   width: 23px;
   height: 24px;
-  transform: rotate(44deg) scale(1);
+  transform: rotate(0deg) scale(1);
   transform-origin: 0 0;
   filter:
     drop-shadow(0 0 6px rgba(51, 156, 255, .9))
@@ -1027,7 +1134,10 @@
       pointerType: options.pointerType || "mouse",
       isPrimary: true,
     };
-    if (typeof PointerEvent === "function") el.dispatchEvent(new PointerEvent(type, init));
+    if (typeof PointerEvent === "function") {
+      el.dispatchEvent(new PointerEvent(type, init));
+      return;
+    }
     const mouseType = type.replace(/^pointer/, "mouse");
     if (mouseType !== type) el.dispatchEvent(new MouseEvent(mouseType, init));
   }
@@ -1151,7 +1261,7 @@
     }
 
     if (event.kind === "scroll") {
-      window.scrollTo(event.scrollX || 0, event.scrollY || 0);
+      await smoothScrollTo(event.scrollX || 0, event.scrollY || 0);
       return { ok: true, kind: event.kind };
     }
 
@@ -1177,6 +1287,12 @@
     const normalized = [];
     for (const event of playable) {
       const previous = normalized[normalized.length - 1];
+      if (
+        event.kind === "drag" &&
+        normalized.slice(-8).some((item) => isDuplicateDragEvent(item, event))
+      ) {
+        continue;
+      }
       if (
         event.kind === "double-click" &&
         previous?.kind === "click" &&

@@ -1,5 +1,5 @@
 (() => {
-  const MAIN_BRIDGE_VERSION = 3;
+  const MAIN_BRIDGE_VERSION = 4;
   globalThis.__tabworksRecorderMainBridgeVersion = MAIN_BRIDGE_VERSION;
 
   const CHANNEL = "__tabworksRecorderMainEvent";
@@ -258,16 +258,6 @@
   });
   addCaptureListener("contextmenu", (event) => {
     if (takeEvent(event)) post("context-menu", event);
-  });
-  addCaptureListener("pointerdown", (event) => {
-    if (takeEvent(event) && event.button === 0 && event.isPrimary) {
-      post("pointerdown", event);
-    }
-  });
-  addCaptureListener("pointerup", (event) => {
-    if (takeEvent(event) && event.button === 0 && event.isPrimary) {
-      post("pointerup", event);
-    }
   });
   addCaptureListener("input", (event) => {
     if (takeEvent(event)) post("input", event);
