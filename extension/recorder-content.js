@@ -661,11 +661,15 @@
       const data = event.data;
       if (!data || data[MAIN_EVENT_CHANNEL] !== true) return;
       const sameWindow = event.source === window;
-      if (sameWindow && data.id) {
+      const isChildFrame = window.top !== window;
+      if (sameWindow && isChildFrame && !recording) {
+        return;
+      }
+      if (sameWindow && data.id && recording) {
         window.postMessage({ [MAIN_ACK_CHANNEL]: true, id: data.id }, "*");
       }
       if (!sameWindow && !data.fallbackToParent) return;
-      if (!sameWindow && window.top !== window) return;
+      if (!sameWindow && isChildFrame) return;
       recordMainBridgeEvent({
         ...data.event,
         frameContext: frameContextForMessageSource(event.source, data.event),
