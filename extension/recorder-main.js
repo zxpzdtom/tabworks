@@ -1,15 +1,16 @@
 (() => {
-  const MAIN_BRIDGE_VERSION = 2;
-  if (globalThis.__tabworksRecorderMainBridgeVersion === MAIN_BRIDGE_VERSION) {
-    return;
-  }
+  const MAIN_BRIDGE_VERSION = 3;
   globalThis.__tabworksRecorderMainBridgeVersion = MAIN_BRIDGE_VERSION;
 
-  const handledEvents = new WeakSet();
   const CHANNEL = "__tabworksRecorderMainEvent";
   const ACK_CHANNEL = "__tabworksRecorderMainAck";
-  const acknowledged = new Set();
-  let eventSeq = 0;
+  const state = globalThis.__tabworksRecorderMainBridgeState || {};
+  state.controller?.abort?.();
+  state.controller = new AbortController();
+  state.handledEvents = new WeakSet();
+  state.acknowledged = new Set();
+  state.eventSeq = 0;
+  globalThis.__tabworksRecorderMainBridgeState = state;
 
   function cssEscape(value) {
     if (globalThis.CSS?.escape) return CSS.escape(value);
@@ -158,8 +159,8 @@
   }
 
   function takeEvent(event) {
-    if (handledEvents.has(event)) return false;
-    handledEvents.add(event);
+    if (state.handledEvents.has(event)) return false;
+    state.handledEvents.add(event);
     return true;
   }
 
@@ -189,7 +190,7 @@
 
   function post(kind, event, extra = {}) {
     const point = pointFromEvent(event);
-    const id = `main_${Date.now()}_${++eventSeq}`;
+    const id = `main_${Date.now()}_${++state.eventSeq}`;
     const target = targetElement(event);
     const message = {
       [CHANNEL]: true,
@@ -219,8 +220,8 @@
     window.postMessage(message, "*");
     if (window.parent && window.parent !== window) {
       setTimeout(() => {
-        if (acknowledged.has(id)) {
-          acknowledged.delete(id);
+        if (state.acknowledged.has(id)) {
+          state.acknowledged.delete(id);
           return;
         }
         window.parent.postMessage({ ...message, fallbackToParent: true }, "*");
@@ -233,14 +234,20 @@
     (event) => {
       const data = event.data;
       if (!data || data[ACK_CHANNEL] !== true || !data.id) return;
-      acknowledged.add(data.id);
+      state.acknowledged.add(data.id);
     },
-    true,
+    { capture: true, signal: state.controller.signal },
   );
 
   function addCaptureListener(type, handler) {
-    window.addEventListener(type, handler, true);
-    document.addEventListener(type, handler, true);
+    window.addEventListener(type, handler, {
+      capture: true,
+      signal: state.controller.signal,
+    });
+    document.addEventListener(type, handler, {
+      capture: true,
+      signal: state.controller.signal,
+    });
   }
 
   addCaptureListener("click", (event) => {
