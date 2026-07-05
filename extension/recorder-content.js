@@ -842,11 +842,11 @@
     if (replayCursor) return replayCursor;
     replayCursor = document.createElement("div");
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
+    const cursorAssetUrl = chrome.runtime.getURL("images/replay-cursor.svg");
     replayCursor.innerHTML = `
-      <div class="tw-replay-cursor-glow"></div>
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 24 24" aria-hidden="true">
-        <path class="tw-replay-cursor-fill" d="M5.35 4.25C4.78 3.78 3.98 4.35 4.21 5.05L8.58 18.36C8.83 19.13 9.9 19.17 10.2 18.42L11.78 14.48C11.98 13.98 12.58 13.79 13.03 14.08L16.88 16.58C17.55 17.01 18.31 16.15 17.82 15.52L5.35 4.25Z" />
-      </svg>
+      <div class="tw-replay-cursor-sprite-wrap">
+        <img class="tw-replay-cursor-asset" alt="" draggable="false" src="${cursorAssetUrl}">
+      </div>
       <div class="tw-replay-cursor-ring"></div>
     `;
     const style = document.createElement("style");
@@ -855,48 +855,34 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
+  transform-origin: 12px 12px;
   transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 120ms ease;
   opacity: 0;
 }
-[data-tabworks-replay-cursor] .tw-replay-cursor-glow {
-  position: absolute;
-  left: -14px;
-  top: -13px;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(75, 166, 255, .3) 0%, rgba(94, 178, 255, .16) 38%, rgba(94, 178, 255, 0) 74%);
-  filter: blur(3px);
+[data-tabworks-replay-cursor] .tw-replay-cursor-sprite-wrap {
+  transform: translate3d(12px, -2.5px, 0);
 }
-[data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
-  position: relative;
+[data-tabworks-replay-cursor] .tw-replay-cursor-asset {
   display: block;
-  width: 17px;
-  height: 17px;
-  overflow: visible;
-  transform: rotate(-8deg);
-  transform-origin: 6px 6px;
+  width: 23px;
+  height: 24px;
+  transform: rotate(44deg) scale(1);
+  transform-origin: 0 0;
   filter:
-    drop-shadow(0 1px 1px rgba(0, 0, 0, .36))
-    drop-shadow(0 0 4px rgba(63, 153, 255, .42));
-}
-[data-tabworks-replay-cursor] .tw-replay-cursor-fill {
-  fill: #05070a;
-  stroke: #fff;
-  stroke-width: 2.05;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  paint-order: stroke fill;
+    drop-shadow(0 0 6px rgba(51, 156, 255, .9))
+    drop-shadow(0 0 15px rgba(51, 156, 255, .48));
+  -webkit-user-drag: none;
+  user-select: none;
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-ring {
   position: absolute;
-  left: -6px;
-  top: -6px;
+  left: 3px;
+  top: 3px;
   width: 20px;
   height: 20px;
   border: 2px solid rgba(64, 156, 255, .58);
@@ -925,7 +911,7 @@
     cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
     cursor.style.opacity = "1";
     cursor.classList.remove("click");
-    cursor.style.transform = `translate3d(${Math.round(point.x - 4)}px, ${Math.round(point.y - 4)}px, 0)`;
+    cursor.style.transform = `translate3d(${Math.round(point.x - 12)}px, ${Math.round(point.y - 12)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
     if (options.click) {

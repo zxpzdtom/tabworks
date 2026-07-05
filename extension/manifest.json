@@ -50,6 +50,12 @@
       "128": "icons/icon128.png"
     }
   },
+  "web_accessible_resources": [
+    {
+      "matches": ["<all_urls>"],
+      "resources": ["images/replay-cursor.svg"]
+    }
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   }
