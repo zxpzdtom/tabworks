@@ -1,5 +1,5 @@
 (() => {
-  const RECORDER_SCRIPT_VERSION = 7;
+  const RECORDER_SCRIPT_VERSION = 9;
   if (globalThis.__tabworksRecorderVersion === RECORDER_SCRIPT_VERSION) return;
   globalThis.__tabworksRecorderVersion = RECORDER_SCRIPT_VERSION;
   globalThis.__tabworksRecorderLoaded = true;
@@ -9,11 +9,15 @@
   let seq = 0;
   let lastScrollTimer = null;
   let pointerStart = null;
+  let mainPointerStart = null;
   let suppressClickUntil = 0;
   let replayCursor = null;
   let replayCursorPoint = null;
   const inputTimers = new WeakMap();
   const handledEvents = new WeakSet();
+  const recentRecordedEvents = [];
+  const MAIN_EVENT_CHANNEL = "__tabworksRecorderMainEvent";
+  const MAIN_ACK_CHANNEL = "__tabworksRecorderMainAck";
   const DRAG_DISTANCE_PX = 12;
   const LONG_PRESS_MS = 650;
 
@@ -200,8 +204,46 @@
     return context;
   }
 
+  function frameContextForMessageSource(source, payload) {
+    const payloadContext = payload?.frameContext || {};
+    if (!source || source === window) return payloadContext;
+
+    const context = {
+      isTop: false,
+      url: payloadContext.url || payload?.url || "",
+      title: payloadContext.title || payload?.title || "",
+      frameName: payloadContext.frameName || "",
+      frameSelector: payloadContext.frameSelector || "",
+      frameIndex: Number.isInteger(payloadContext.frameIndex)
+        ? payloadContext.frameIndex
+        : null,
+      frameRect: payloadContext.frameRect || null,
+    };
+
+    try {
+      const frames = Array.from(document.querySelectorAll("iframe,frame"));
+      const frameEl = frames.find((item) => item.contentWindow === source);
+      if (!frameEl) return context;
+      const rect = frameEl.getBoundingClientRect();
+      context.frameName = frameEl.getAttribute("name") || context.frameName;
+      context.frameSelector = deepCssPath(frameEl, 8);
+      context.frameIndex = frames.indexOf(frameEl);
+      context.frameRect = {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    } catch {
+      /* Cross-origin frames can still post messages, but details may be hidden. */
+    }
+
+    return context;
+  }
+
   function send(event) {
     if (!recording || replaying) return;
+    if (isDuplicateRecordedEvent(event)) return;
     const frameContext = getFrameContext();
     chrome.runtime.sendMessage({
       type: "tabworks-recording-event",
@@ -216,6 +258,31 @@
         ...event,
       },
     });
+  }
+
+  function isDuplicateRecordedEvent(event) {
+    if (event.kind === "start" || event.kind === "stop") return false;
+    const selector =
+      event.element?.preferredSelector ||
+      event.element?.selectors?.find((item) => item.unique)?.selector ||
+      "";
+    const key = [
+      event.kind,
+      selector,
+      Math.round(Number(event.x ?? event.startX ?? 0)),
+      Math.round(Number(event.y ?? event.startY ?? 0)),
+      event.value === undefined ? "" : JSON.stringify(event.value),
+    ].join("|");
+    const timestamp = performance.now();
+    while (
+      recentRecordedEvents.length &&
+      timestamp - recentRecordedEvents[0].timestamp > 180
+    ) {
+      recentRecordedEvents.shift();
+    }
+    if (recentRecordedEvents.some((item) => item.key === key)) return true;
+    recentRecordedEvents.push({ key, timestamp });
+    return false;
   }
 
   function startRecordingSession(sessionId) {
@@ -456,6 +523,158 @@
     };
   }
 
+  function elementFromPointPayload(payload) {
+    if (!Number.isFinite(payload?.x) || !Number.isFinite(payload?.y)) {
+      return document.activeElement || document.body;
+    }
+    return document.elementFromPoint(payload.x, payload.y) || document.activeElement || document.body;
+  }
+
+  function mainPoint(payload) {
+    return {
+      x: Math.round(Number(payload?.x || 0)),
+      y: Math.round(Number(payload?.y || 0)),
+    };
+  }
+
+  function recordMainBridgeEvent(payload) {
+    if (!payload || replaying) return;
+    if (!recording) {
+      syncRecordingState(() => recordMainBridgeEvent(payload));
+      return;
+    }
+    const point = mainPoint(payload);
+    const target = elementFromPointPayload(payload);
+    const meta =
+      payload.element ||
+      selectorMeta(
+        target?.closest?.("button,a,input,textarea,select,[role],[data-testid],[contenteditable='true']") ||
+          target,
+      );
+    const frameOverrides = {
+      inFrame: Boolean(payload.inFrame || payload.frameContext?.isTop === false),
+      frameContext: payload.frameContext,
+      url: payload.url,
+      title: payload.title,
+    };
+
+    if (payload.kind === "pointerdown") {
+      mainPointerStart = {
+        pointerId: payload.pointerId,
+        pointerType: payload.pointerType || "mouse",
+        startedAt: performance.now(),
+        point,
+        element: meta,
+        localPoint: localPointForEvent({ clientX: point.x, clientY: point.y }, target),
+        sortable: sortableSnapshotFromTarget(target),
+      };
+      return;
+    }
+
+    if (payload.kind === "pointerup") {
+      if (!mainPointerStart || payload.pointerId !== mainPointerStart.pointerId) return;
+      const distance = pointDistance(mainPointerStart.point, point);
+      const durationMs = Math.round(performance.now() - mainPointerStart.startedAt);
+      if (distance >= DRAG_DISTANCE_PX) {
+        const dragEvent = {
+          kind: "drag",
+          element: mainPointerStart.element,
+          pointerType: mainPointerStart.pointerType,
+          durationMs,
+          targetElement: meta,
+          startX: mainPointerStart.point.x,
+          startY: mainPointerStart.point.y,
+          endX: point.x,
+          endY: point.y,
+          startOffsetX: mainPointerStart.localPoint?.offsetX,
+          startOffsetY: mainPointerStart.localPoint?.offsetY,
+          elementWidth: mainPointerStart.localPoint?.width,
+          elementHeight: mainPointerStart.localPoint?.height,
+          deltaX: point.x - mainPointerStart.point.x,
+          deltaY: point.y - mainPointerStart.point.y,
+        };
+        const sortableBefore = mainPointerStart.sortable;
+        setTimeout(() => {
+          const sortable = sortableAfter(sortableBefore);
+          send(
+            sortable
+              ? { ...dragEvent, sortable, source: "main-world", ...frameOverrides }
+              : { ...dragEvent, source: "main-world", ...frameOverrides },
+          );
+        }, 120);
+      } else if (durationMs >= LONG_PRESS_MS) {
+        send({
+          kind: "long-press",
+          element: mainPointerStart.element,
+          pointerType: mainPointerStart.pointerType,
+          durationMs,
+          x: point.x,
+          y: point.y,
+          source: "main-world",
+          ...frameOverrides,
+        });
+      }
+      mainPointerStart = null;
+      return;
+    }
+
+    if (payload.kind === "input" || payload.kind === "change") {
+      if (!meta) return;
+      send({
+        kind: "input",
+        trigger: payload.kind,
+        element: meta,
+        value: payload.value ?? "",
+        redacted: false,
+        source: "main-world",
+        ...frameOverrides,
+      });
+      return;
+    }
+
+    if (!meta) return;
+    if (payload.kind === "click") {
+      send({
+        kind: "click",
+        element: meta,
+        x: point.x,
+        y: point.y,
+        button: payload.button,
+        source: "main-world",
+        ...frameOverrides,
+      });
+    } else if (payload.kind === "double-click" || payload.kind === "context-menu") {
+      send({
+        kind: payload.kind,
+        element: meta,
+        x: point.x,
+        y: point.y,
+        source: "main-world",
+        ...frameOverrides,
+      });
+    }
+  }
+
+  window.addEventListener(
+    "message",
+    (event) => {
+      const data = event.data;
+      if (!data || data[MAIN_EVENT_CHANNEL] !== true) return;
+      const sameWindow = event.source === window;
+      if (sameWindow && data.id) {
+        window.postMessage({ [MAIN_ACK_CHANNEL]: true, id: data.id }, "*");
+      }
+      if (!sameWindow && !data.fallbackToParent) return;
+      if (!sameWindow && window.top !== window) return;
+      recordMainBridgeEvent({
+        ...data.event,
+        frameContext: frameContextForMessageSource(event.source, data.event),
+        inFrame: !sameWindow || data.event?.inFrame,
+      });
+    },
+    true,
+  );
+
   addCaptureListener("pointerdown", (event) => {
     if (!takeEvent(event) || replaying || event.button !== 0 || !event.isPrimary) return;
     if (!recording) {
@@ -621,8 +840,8 @@
     replayCursor.setAttribute("data-tabworks-replay-cursor", "true");
     replayCursor.innerHTML = `
       <div class="tw-replay-cursor-glow"></div>
-      <svg class="tw-replay-cursor-arrow" viewBox="0 0 16 16" aria-hidden="true">
-        <path class="tw-replay-cursor-fill" transform="matrix(-1 0 0 1 16 0)" d="M14.082 2.182a.5.5 0 0 1 .103.557L8.528 15.467a.5.5 0 0 1-.917-.007L5.57 10.694.803 8.652a.5.5 0 0 1-.006-.916l12.728-5.657a.5.5 0 0 1 .556.103z" />
+      <svg class="tw-replay-cursor-arrow" viewBox="0 0 20 20" aria-hidden="true">
+        <path class="tw-replay-cursor-fill" d="M5.28 3.76C4.67 3.32 3.9 3.95 4.17 4.66L8.86 17.05C9.17 17.88 10.34 17.87 10.63 17.03L11.72 13.86C11.91 13.31 12.57 13.09 13.05 13.42L16.21 15.6C16.91 16.08 17.75 15.22 17.25 14.54L6.66 4.8C6.27 4.45 5.75 4.09 5.28 3.76Z" />
       </svg>
       <div class="tw-replay-cursor-ring"></div>
     `;
@@ -632,8 +851,8 @@
   position: fixed;
   left: 0;
   top: 0;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   z-index: 2147483647;
   pointer-events: none;
   transform: translate3d(-40px, -40px, 0);
@@ -644,26 +863,28 @@
   position: absolute;
   left: -13px;
   top: -12px;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(64, 156, 255, .33) 0%, rgba(64, 156, 255, .18) 35%, rgba(64, 156, 255, 0) 70%);
-  filter: blur(2px);
+  background: radial-gradient(circle, rgba(70, 160, 255, .28) 0%, rgba(88, 171, 255, .16) 36%, rgba(88, 171, 255, 0) 72%);
+  filter: blur(2.5px);
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-arrow {
   position: relative;
   display: block;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   overflow: visible;
+  transform: rotate(-4deg);
+  transform-origin: 5px 5px;
   filter:
-    drop-shadow(0 1px 1px rgba(15, 23, 42, .32))
-    drop-shadow(0 0 5px rgba(74, 158, 255, .5));
+    drop-shadow(0 1px 1px rgba(15, 23, 42, .34))
+    drop-shadow(0 0 4px rgba(66, 154, 255, .46));
 }
 [data-tabworks-replay-cursor] .tw-replay-cursor-fill {
-  fill: #05070a;
+  fill: #040609;
   stroke: #fff;
-  stroke-width: 1.45;
+  stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
   paint-order: stroke fill;
@@ -700,7 +921,7 @@
     cursor.style.transitionDuration = `${Math.round(duration)}ms, 120ms`;
     cursor.style.opacity = "1";
     cursor.classList.remove("click");
-    cursor.style.transform = `translate3d(${Math.round(point.x - 3)}px, ${Math.round(point.y - 3)}px, 0)`;
+    cursor.style.transform = `translate3d(${Math.round(point.x - 4)}px, ${Math.round(point.y - 4)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
     if (options.click) {

@@ -723,6 +723,11 @@ async function injectRecorderIntoFrames(tabId, targetFrameId) {
     try {
       await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
+        files: ["recorder-main.js"],
+        world: "MAIN",
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
         files: ["recorder-content.js"],
       });
       return;
@@ -736,6 +741,11 @@ async function injectRecorderIntoFrames(tabId, targetFrameId) {
       : (await getTabFrames(tabId)).map((frame) => frame.frameId);
   for (const frameId of frameIds) {
     try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        files: ["recorder-main.js"],
+        world: "MAIN",
+      });
       await chrome.scripting.executeScript({
         target: { tabId, frameIds: [frameId] },
         files: ["recorder-content.js"],
