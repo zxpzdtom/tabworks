@@ -12,6 +12,21 @@ It lets local tools run user-requested browser actions through the Chrome Debugg
 4. Select this `extension/` folder.
 5. Start the local service with `tw serve` or `bun cli/main.ts serve`.
 
+## Build
+
+Extension source lives in `src/`:
+
+- `src/*.ts` compiles to the root `*.js` files referenced by `manifest.json`.
+- `src/*.css` is processed by Tailwind into the root `popup.css` and `guide.css`.
+
+Before loading the unpacked extension or packaging it for the Chrome Web Store, run:
+
+```bash
+bun run extension:build
+```
+
+Chrome loads the generated root files; keep them committed with the source files.
+
 ## Popup
 
 Click the extension icon to view:

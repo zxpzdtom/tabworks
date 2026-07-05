@@ -102,7 +102,7 @@ function sendToExtension(command) {
       return reject(
         new Error(
           "扩展未连接。请安装 tabworks Chrome 扩展并确保 bridge 正在运行。\n" +
-            "安装方法：打开 chrome://extensions → 开启开发者模式 → 加载已解压扩展 → 选择 extension/ 目录",
+            "安装方法：从 Chrome Web Store 安装 TabWorks Bridge 扩展。",
         ),
       );
     }
@@ -1481,7 +1481,7 @@ async function boot() {
     console.error(`[tabworks] 统一服务已启动 http://${HOST}:${PORT}`);
     console.error("[tabworks] viewer / 日志 API / bridge / WebSocket 已统一到单端口");
     console.error("[tabworks] 等待 Chrome 扩展连接...");
-    console.error("[tabworks] 提示：若扩展未安装，请参考 extension/README.md");
+    console.error("[tabworks] 提示：若扩展未安装，请从 Chrome Web Store 安装 TabWorks Bridge 扩展");
     if (IDLE_TIMEOUT <= 0) {
       console.error("[tabworks] 已关闭空闲自动退出，bridge 将常驻运行");
     }

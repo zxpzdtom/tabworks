@@ -99,7 +99,7 @@ export async function checkBridge(): Promise<void> {
     // 扩展未连接：轮询等待最多 30s（扩展安装后会自动连入 bridge）
     process.stderr.write(
       "Chrome 扩展未连接，等待扩展连入（最多 30s）...\n" +
-        "如未安装，请参考 extension/README.md\n",
+        "如未安装，请从 Chrome Web Store 安装 TabWorks Bridge 扩展。\n",
     );
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
@@ -115,7 +115,7 @@ export async function checkBridge(): Promise<void> {
       }
     }
     throw new Error(
-      "Chrome 扩展未连接（等待超时），请安装 extension/ 目录中的扩展，参考 extension/README.md",
+      "Chrome 扩展未连接（等待超时），请从 Chrome Web Store 安装 TabWorks Bridge 扩展。",
     );
   }
 }
