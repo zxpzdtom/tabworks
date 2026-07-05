@@ -7,6 +7,7 @@ import {
   executeRecord,
   executeRoutine,
   executeSynthesize,
+  executeUiRecord,
   formatRoutineList,
   listRoutines,
   loadRoutine,
@@ -227,6 +228,19 @@ async function main(): Promise<void> {
       if (opts.name) args.push("--name", opts.name);
       args.push("--timeout", opts.timeout);
       console.log(await executeRecord(args));
+    });
+
+  program
+    .command("ui-record")
+    .description("录制当前网页 UI 操作，生成后续可导出的 UI 流程数据")
+    .argument("<op>", "start | stop | status")
+    .argument("[sessionId]", "停止录制时传入的 sessionId")
+    .option("--tab-id <id>", "录制指定 Chrome 标签页，默认当前活动标签页")
+    .action(async (op: string, sessionId: string | undefined, opts) => {
+      const args = [op];
+      if (sessionId) args.push(sessionId);
+      if (opts.tabId) args.push("--tab-id", opts.tabId);
+      console.log(await executeUiRecord(args));
     });
 
   program

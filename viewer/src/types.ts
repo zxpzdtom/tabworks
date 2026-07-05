@@ -47,6 +47,7 @@ export type Step =
 			direction: string;
 			distance: number;
 	  }
+	| { kind: "sleep"; seq: number; time: string; durationMs: number }
 	| {
 			kind: "screenshot";
 			seq: number;

@@ -19,7 +19,7 @@
  */
 
 import http from "node:http";
-import { readdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { extname, join, relative } from "node:path";
 import { WebSocketServer } from "ws";
@@ -34,6 +34,7 @@ const STARTED_AT = Date.now();
 const PROJECT_DIR = join(import.meta.dirname, "..", "..");
 const LOGS_DIR = join(PROJECT_DIR, "logs");
 const SCREENSHOTS_DIR = join(LOGS_DIR, "screenshots");
+const UI_RECORDINGS_DIR = join(PROJECT_DIR, ".bridge", "ui-record");
 const VIEWER_DIST_DIR = join(PROJECT_DIR, "viewer", "dist");
 const INDEX_HTML = join(VIEWER_DIST_DIR, "index.html");
 const BRIDGE_ROUTES = new Set([
@@ -45,12 +46,19 @@ const BRIDGE_ROUTES = new Set([
   "/inspect",
   "/run-js",
   "/tap",
+  "/press",
+  "/drag",
+  "/key",
   "/input",
   "/move",
   "/capture",
   "/request",
   "/cookies",
   "/sessions",
+  "/recording/start",
+  "/recording/stop",
+  "/recording/status",
+  "/recording/replay",
   "/shutdown",
 ]);
 const VIEWER_CORS_HEADERS = {
@@ -80,6 +88,7 @@ const pending = new Map(); // 等待扩展回复的请求 Map<id, {resolve, reje
 let nextId = 0;
 const logBuffer = []; // 扩展转发的 console 日志（最多 200 条）
 const MAX_LOG_BUFFER = 200;
+const uiRecordings = new Map();
 
 function isExtensionConnected() {
   return extensionWs !== null && extensionWs.readyState === 1; // WebSocket.OPEN = 1
@@ -93,7 +102,7 @@ function sendToExtension(command) {
       return reject(
         new Error(
           "扩展未连接。请安装 tabworks Chrome 扩展并确保 bridge 正在运行。\n" +
-            "安装方法：打开 chrome://extensions → 开启开发者模式 → 加载已解压扩展 → 选择 extension/ 目录",
+            "安装方法：从 Chrome Web Store 安装 TabWorks Bridge 扩展。",
         ),
       );
     }
@@ -152,6 +161,51 @@ function requireField(value, fieldName) {
   }
 }
 
+function requireFiniteNumber(value, fieldName) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${fieldName} 字段必须是数字`);
+  return number;
+}
+
+async function elementPoint(tabId, selector, workspace, options = {}) {
+  requireField(selector, "selector");
+  const offsetX =
+    options.offsetX === undefined || options.offsetX === null
+      ? null
+      : requireFiniteNumber(options.offsetX, "offsetX");
+  const offsetY =
+    options.offsetY === undefined || options.offsetY === null
+      ? null
+      : requireFiniteNumber(options.offsetY, "offsetY");
+  const result = await sendToExtension({
+    action: "exec",
+    tabId,
+    code: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { error: 'not found' };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      const offsetX = ${JSON.stringify(offsetX)};
+      const offsetY = ${JSON.stringify(offsetY)};
+      return {
+        tag: el.tagName,
+        text: (el.textContent || '').trim().slice(0, 200),
+        x: rect.x + (offsetX == null ? rect.width / 2 : offsetX),
+        y: rect.y + (offsetY == null ? rect.height / 2 : offsetY),
+        width: rect.width,
+        height: rect.height
+      };
+    })()`,
+    workspace,
+  });
+  if (!result || result.error) throw new Error("元素未找到");
+  return result;
+}
+
+async function elementCenter(tabId, selector, workspace) {
+  return elementPoint(tabId, selector, workspace);
+}
+
 function isSubPath(baseDir, targetPath) {
   const rel = relative(baseDir, targetPath);
   return rel === "" || (!rel.startsWith("..") && rel !== "..");
@@ -171,6 +225,89 @@ function todayDate() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate(),
   ).padStart(2, "0")}`;
+}
+
+function smoothScrollScript(targetXExpression, targetYExpression, result) {
+  return `(() => new Promise((resolve) => {
+  const requestedX = Number(${targetXExpression}) || 0;
+  const requestedY = Number(${targetYExpression}) || 0;
+  const maxX = Math.max(0, document.documentElement.scrollWidth, document.body?.scrollWidth || 0) - window.innerWidth;
+  const maxY = Math.max(0, document.documentElement.scrollHeight, document.body?.scrollHeight || 0) - window.innerHeight;
+  const targetX = Math.max(0, Math.min(requestedX, maxX));
+  const targetY = Math.max(0, Math.min(requestedY, maxY));
+  const startX = window.scrollX;
+  const startY = window.scrollY;
+  const deltaX = targetX - startX;
+  const deltaY = targetY - startY;
+  const distance = Math.hypot(deltaX, deltaY);
+  if (distance < 1) {
+    window.scrollTo(targetX, targetY);
+    resolve(${JSON.stringify(result)});
+    return;
+  }
+  const duration = Math.max(260, Math.min(900, distance * 0.55));
+  const startedAt = performance.now();
+  function tick(nowTime) {
+    const progress = Math.min(1, (nowTime - startedAt) / duration);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    window.scrollTo(startX + deltaX * eased, startY + deltaY * eased);
+    if (progress < 1) requestAnimationFrame(tick);
+    else resolve(${JSON.stringify(result)});
+  }
+  requestAnimationFrame(tick);
+}))()`;
+}
+
+function createRecordingSessionId() {
+  return `ui_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getRecordingStatus() {
+  return [...uiRecordings.values()].map((recording) => ({
+    sessionId: recording.sessionId,
+    tabId: recording.tabId,
+    url: recording.url,
+    title: recording.title,
+    startedAt: recording.startedAt,
+    eventCount: recording.events.length,
+    outDir: recording.outDir,
+  }));
+}
+
+function appendRecordingEvent(sessionId, tabId, event) {
+  const recording = uiRecordings.get(sessionId);
+  if (!recording) return false;
+  recording.tabId = tabId ?? recording.tabId;
+  recording.events.push(event);
+  recording.updatedAt = new Date().toISOString();
+  if (event?.url) recording.url = event.url;
+  if (event?.title) recording.title = event.title;
+  return true;
+}
+
+async function finishRecording(sessionId, finalMeta = {}) {
+  const recording = uiRecordings.get(sessionId);
+  if (!recording) return null;
+  recording.stoppedAt = new Date().toISOString();
+  if (finalMeta.url) recording.url = finalMeta.url;
+  if (finalMeta.title) recording.title = finalMeta.title;
+  await mkdir(recording.outDir, { recursive: true });
+  await writeFile(
+    join(recording.outDir, "session.json"),
+    JSON.stringify(recording, null, 2),
+  );
+  uiRecordings.delete(sessionId);
+  return recording;
+}
+
+async function readRecordingSession(sessionId) {
+  requireField(sessionId, "sessionId");
+  const sessionFile = join(UI_RECORDINGS_DIR, String(sessionId), "session.json");
+  if (!isSubPath(UI_RECORDINGS_DIR, sessionFile)) {
+    throw new Error("非法录制 sessionId");
+  }
+  const raw = await readFile(sessionFile, "utf-8");
+  return JSON.parse(raw);
 }
 
 function aggregateLogs(entries) {
@@ -326,6 +463,16 @@ function aggregateLogs(entries) {
           time: row.time,
           direction: row.direction,
           distance: row.distance ?? 0,
+        });
+        continue;
+      }
+
+      if (row.msg === "sleep") {
+        steps.push({
+          kind: "sleep",
+          seq: ++seq,
+          time: row.time,
+          durationMs: row.durationMs ?? 0,
         });
         continue;
       }
@@ -744,6 +891,86 @@ const httpServer = http.createServer(async (req, res) => {
       return respond(res, 200, { ok: true, mode, ...elementMeta });
     }
 
+    // POST /press — 长按元素
+    if (req.method === "POST" && url.pathname === "/press") {
+      const body = await parseJson(req);
+      const tabId = body.pageId ?? body.tabId;
+      requireField(tabId, "pageId");
+      const point = body.selector
+        ? await elementPoint(tabId, body.selector, body.workspace, {
+            offsetX: body.offsetX,
+            offsetY: body.offsetY,
+          })
+        : {
+            x: requireFiniteNumber(body.x, "x"),
+            y: requireFiniteNumber(body.y, "y"),
+          };
+      const result = await sendToExtension({
+        action: "mouse",
+        tabId,
+        op: "press",
+        x: point.x,
+        y: point.y,
+        durationMs: body.durationMs,
+        workspace: body.workspace,
+      });
+      return respond(res, 200, { ok: true, ...point, result });
+    }
+
+    // POST /drag — 拖拽元素或坐标
+    if (req.method === "POST" && url.pathname === "/drag") {
+      const body = await parseJson(req);
+      const tabId = body.pageId ?? body.tabId;
+      requireField(tabId, "pageId");
+      const start = body.selector || body.fromSelector
+        ? await elementPoint(tabId, body.selector || body.fromSelector, body.workspace, {
+            offsetX: body.offsetX ?? body.fromOffsetX,
+            offsetY: body.offsetY ?? body.fromOffsetY,
+          })
+        : {
+            x: requireFiniteNumber(body.fromX ?? body.x, "fromX"),
+            y: requireFiniteNumber(body.fromY ?? body.y, "fromY"),
+          };
+      const end = body.toSelector
+        ? await elementCenter(tabId, body.toSelector, body.workspace)
+        : body.toX !== undefined || body.toY !== undefined
+          ? {
+              x: requireFiniteNumber(body.toX, "toX"),
+              y: requireFiniteNumber(body.toY, "toY"),
+            }
+          : {
+              x: start.x + requireFiniteNumber(body.deltaX, "deltaX"),
+              y: start.y + requireFiniteNumber(body.deltaY, "deltaY"),
+            };
+      const result = await sendToExtension({
+        action: "mouse",
+        tabId,
+        op: "drag",
+        fromX: start.x,
+        fromY: start.y,
+        toX: end.x,
+        toY: end.y,
+        durationMs: body.durationMs,
+        workspace: body.workspace,
+      });
+      return respond(res, 200, { ok: true, start, end, result });
+    }
+
+    // POST /key — 发送可信键盘事件
+    if (req.method === "POST" && url.pathname === "/key") {
+      const body = await parseJson(req);
+      const tabId = body.pageId ?? body.tabId;
+      requireField(tabId, "pageId");
+      requireField(body.key, "key");
+      const result = await sendToExtension({
+        action: "key",
+        tabId,
+        key: body.key,
+        workspace: body.workspace,
+      });
+      return respond(res, 200, { ok: true, result });
+    }
+
     // POST /input — 向输入框写入文字
     if (req.method === "POST" && url.pathname === "/input") {
       const body = await parseJson(req);
@@ -842,19 +1069,25 @@ const httpServer = http.createServer(async (req, res) => {
       const body = await parseJson(req);
       requireField(body.pageId ?? body.tabId, "pageId");
       const direction = body.direction || "down";
-      const distance = Math.abs(parseInt(String(body.distance || 3000), 10));
-      let script = `window.scrollBy(0, ${distance}); 'down'`;
-      if (direction === "up") script = `window.scrollBy(0, -${distance}); 'up'`;
-      if (direction === "top") script = `window.scrollTo(0, 0); 'top'`;
-      if (direction === "bottom")
-        script = `window.scrollTo(0, document.body.scrollHeight); 'bottom'`;
+      const rawDistance = parseInt(String(body.distance || 3000), 10);
+      const distance = Number.isFinite(rawDistance) ? Math.abs(rawDistance) : 3000;
+      let script = smoothScrollScript("window.scrollX", `window.scrollY + ${distance}`, "down");
+      if (direction === "up") script = smoothScrollScript("window.scrollX", `window.scrollY - ${distance}`, "up");
+      if (direction === "top") script = smoothScrollScript("window.scrollX", "0", "top");
+      if (direction === "bottom") {
+        script = smoothScrollScript(
+          "window.scrollX",
+          "Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)",
+          "bottom",
+        );
+      }
       const moved = await sendToExtension({
         action: "exec",
         tabId: body.pageId ?? body.tabId,
         code: script,
         workspace: body.workspace,
       });
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise((r) => setTimeout(r, 120));
       return respond(res, 200, { direction: moved || direction });
     }
 
@@ -935,6 +1168,113 @@ const httpServer = http.createServer(async (req, res) => {
       return respond(res, 200, result);
     }
 
+    // POST /recording/start — 开始录制当前或指定标签页的 UI 操作
+    if (req.method === "POST" && url.pathname === "/recording/start") {
+      const body = await parseJson(req);
+      const sessionId = body.sessionId || createRecordingSessionId();
+      const outDir = join(UI_RECORDINGS_DIR, sessionId);
+      uiRecordings.set(sessionId, {
+        sessionId,
+        tabId: body.pageId ?? body.tabId ?? null,
+        url: body.url ?? "",
+        title: "",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        outDir,
+        events: [],
+      });
+
+      try {
+        const result = await sendToExtension({
+          action: "recording",
+          op: "start",
+          sessionId,
+          tabId: body.pageId ?? body.tabId,
+        });
+        const recording = uiRecordings.get(sessionId);
+        if (recording) {
+          recording.tabId = result.tabId ?? recording.tabId;
+          recording.url = result.url ?? recording.url;
+          recording.title = result.title ?? recording.title;
+        }
+        return respond(res, 200, {
+          ok: true,
+          sessionId,
+          tabId: result.tabId,
+          url: result.url,
+          title: result.title,
+          outDir,
+        });
+      } catch (err) {
+        uiRecordings.delete(sessionId);
+        throw err;
+      }
+    }
+
+    // POST /recording/stop — 停止录制并写入 .bridge/ui-record/<sessionId>/session.json
+    if (req.method === "POST" && url.pathname === "/recording/stop") {
+      const body = await parseJson(req);
+      requireField(body.sessionId, "sessionId");
+      const result = await sendToExtension({
+        action: "recording",
+        op: "stop",
+        sessionId: body.sessionId,
+        tabId: body.pageId ?? body.tabId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const recording = await finishRecording(body.sessionId, result);
+      if (!recording) return respond(res, 404, { error: "录制会话不存在" });
+      return respond(res, 200, {
+        ok: true,
+        sessionId: body.sessionId,
+        eventCount: recording.events.length,
+        outDir: recording.outDir,
+        url: recording.url,
+        title: recording.title,
+      });
+    }
+
+    // POST /recording/replay — 在当前或指定标签页回放已保存的 UI 录制
+    if (req.method === "POST" && url.pathname === "/recording/replay") {
+      const body = await parseJson(req);
+      if (!body.sessionId && !Array.isArray(body.events)) {
+        throw new Error("需要 sessionId 或 events");
+      }
+      const recording = body.sessionId
+        ? await readRecordingSession(body.sessionId)
+        : {
+            sessionId: "inline",
+            title: body.title || "",
+            url: body.url || "",
+            events: body.events || [],
+          };
+      const result = await sendToExtension({
+        action: "recording",
+        op: "replay",
+        tabId: body.pageId ?? body.tabId,
+        events: recording.events || [],
+        options: {
+          speed: body.speed,
+          maxDelayMs: body.maxDelayMs,
+          reloadBeforeReplay: body.reloadBeforeReplay !== false,
+          startUrl: body.startUrl || recording.startUrl || recording.url,
+          url: recording.url,
+        },
+      });
+      return respond(res, 200, {
+        ok: true,
+        sessionId: recording.sessionId,
+        sourceTitle: recording.title,
+        sourceUrl: recording.url,
+        ...result,
+      });
+    }
+
+    // POST /recording/status — 查看当前进行中的 UI 录制
+    if (req.method === "POST" && url.pathname === "/recording/status") {
+      return respond(res, 200, { recordings: getRecordingStatus() });
+    }
+
     return respond(res, 404, { error: "未知路由" });
   } catch (err) {
     return respond(res, 500, { error: err.message || String(err) });
@@ -999,6 +1339,12 @@ wss.on("connection", (ws) => {
       console.error(`${prefix} ${msg.msg}`);
       logBuffer.push({ level: msg.level, msg: msg.msg, ts: msg.ts });
       if (logBuffer.length > MAX_LOG_BUFFER) logBuffer.shift();
+      return;
+    }
+
+    // UI 录制事件转发
+    if (msg.type === "recording-event") {
+      appendRecordingEvent(msg.sessionId, msg.tabId, msg.event);
       return;
     }
 
@@ -1135,7 +1481,7 @@ async function boot() {
     console.error(`[tabworks] 统一服务已启动 http://${HOST}:${PORT}`);
     console.error("[tabworks] viewer / 日志 API / bridge / WebSocket 已统一到单端口");
     console.error("[tabworks] 等待 Chrome 扩展连接...");
-    console.error("[tabworks] 提示：若扩展未安装，请参考 extension/README.md");
+    console.error("[tabworks] 提示：若扩展未安装，请从 Chrome Web Store 安装 TabWorks Bridge 扩展");
     if (IDLE_TIMEOUT <= 0) {
       console.error("[tabworks] 已关闭空闲自动退出，bridge 将常驻运行");
     }

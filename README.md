@@ -7,7 +7,7 @@ TabWorks Bridge connects local automation code to the signed-in Chrome session y
 - `viewer/`: local execution log viewer served by the bridge.
 - `cli/`: optional command line helper for routines, recording, exploring and daemon management.
 
-The Chrome extension can be submitted to Chrome Web Store as the user-facing entry. The CLI is optional: users can run the local bridge from source, or install the CLI for a smoother workflow.
+The Chrome extension is distributed separately through the Chrome Web Store. The CLI package contains only the local bridge, viewer assets, and routine tooling; it does not include the browser extension source directory.
 
 ## Name
 
@@ -31,10 +31,13 @@ bun install
 cd bridge && bun install
 cd ../viewer && bun install
 cd ..
+bun run extension:build
 bun cli/main.ts serve
 ```
 
 Open Chrome, go to `chrome://extensions`, enable developer mode, and load the `extension/` folder.
+
+This unpacked extension step is only for source development. End users should install the published TabWorks Bridge extension from the Chrome Web Store.
 
 Once connected, open the extension popup to view status, common commands, execution options and the log viewer entry.
 
@@ -64,7 +67,7 @@ Or run directly:
 bun cli/main.ts serve
 ```
 
-If you later publish a package, keep `tabworks` and `tw` as the exposed binaries.
+When publishing the CLI package, keep `tabworks` and `tw` as the exposed binaries. The CLI package should not include `extension/`; the extension is packaged and published separately.
 
 ## Chrome Web Store Notes
 
@@ -72,6 +75,7 @@ The extension is now generic and contains no company-specific naming or internal
 
 Before submission:
 
+- Build the extension with `bun run extension:build`.
 - Build the viewer with `cd viewer && bun run build`.
 - Keep `extension/manifest.json` permissions aligned with actual usage.
 - Explain why `debugger`, `tabs`, `cookies`, and `<all_urls>` are needed: the extension executes local user-requested browser automation in the signed-in session.

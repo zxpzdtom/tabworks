@@ -8,6 +8,26 @@
     "tabworks": "cli/main.ts",
     "tw": "cli/main.ts"
   },
+  "files": [
+    "README.md",
+    "cli/main.ts",
+    "bridge/lib/args.ts",
+    "bridge/lib/bridge.ts",
+    "bridge/lib/cli.ts",
+    "bridge/lib/explore.ts",
+    "bridge/lib/format.ts",
+    "bridge/lib/logger.ts",
+    "bridge/lib/record.ts",
+    "bridge/lib/routine.ts",
+    "bridge/lib/service.ts",
+    "bridge/lib/synthesize.ts",
+    "bridge/lib/types.ts",
+    "bridge/scripts/browser-bridge.mjs",
+    "bridge/scripts/stop.sh",
+    "bridge/sites/**/*.ts",
+    "viewer/dist/",
+    "scripts/setup.sh"
+  ],
   "scripts": {
     "serve": "bun cli/main.ts serve",
     "dev": "bun cli/main.ts serve",
@@ -17,14 +37,23 @@
     "list": "bun cli/main.ts list",
     "bridge:status": "bun cli/main.ts bridge status",
     "bridge:stop": "bun cli/main.ts bridge stop",
+    "extension:build": "bun build extension/src/background.ts --target=browser --format=esm --outfile=extension/background.js && bun build extension/src/popup.ts --target=browser --format=iife --outfile=extension/popup.js && bun build extension/src/guide.ts --target=browser --format=iife --outfile=extension/guide.js && bun build extension/src/recorder-content.ts --target=browser --format=iife --outfile=extension/recorder-content.js && bun build extension/src/recorder-main.ts --target=browser --format=iife --outfile=extension/recorder-main.js && bunx @tailwindcss/cli -i extension/src/popup.css -o extension/popup.css --minify && bunx @tailwindcss/cli -i extension/src/guide.css -o extension/guide.css --minify",
+    "extension:check": "bunx tsc -p extension/tsconfig.json --noEmit",
     "test": "cd bridge && bun test --ignore-pattern '**/*.integration.test.ts' sites"
   },
   "dependencies": {
+    "cli-table3": "^0.6.5",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
+    "ws": "^8.20.0",
     "commander": "^14.0.3"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.2.2",
+    "@types/chrome": "^0.1.1",
     "@types/bun": "^1.3.12",
     "bun-types": "^1.3.12",
+    "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2"
   }
 }

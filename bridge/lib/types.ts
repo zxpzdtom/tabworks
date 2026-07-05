@@ -59,6 +59,8 @@ export interface Page {
     direction: "up" | "down" | "top" | "bottom",
     distance?: number,
   ): Promise<void>;
+  /** 等待指定毫秒数，用于等待页面异步加载或动画完成 */
+  sleep(ms: number): Promise<void>;
   /** 截图，返回 base64 数据 URI */
   screenshot(options?: {
     format?: "png" | "jpeg";

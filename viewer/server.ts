@@ -100,6 +100,7 @@ type Step =
       direction: string;
       distance: number;
     }
+  | { kind: "sleep"; seq: number; time: string; durationMs: number }
   | {
       kind: "screenshot";
       seq: number;
@@ -278,6 +279,13 @@ function aggregateLogs(entries: RawEntry[]): Execution[] {
           time: r.time,
           direction: r.direction,
           distance: r.distance ?? 0,
+        });
+      } else if (r.msg === "sleep") {
+        steps.push({
+          kind: "sleep",
+          seq: ++seq,
+          time: r.time,
+          durationMs: r.durationMs ?? 0,
         });
       } else if (r.msg === "screenshot →") {
         const ssEnd = rows.find(

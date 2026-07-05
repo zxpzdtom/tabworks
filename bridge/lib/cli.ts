@@ -14,6 +14,10 @@ import type { Routine } from "./routine";
 import { renderSynthesizeResult, synthesize } from "./synthesize";
 
 const SITES_DIR = join(import.meta.dir, "..", "sites");
+const DEFAULT_BRIDGE_PORT = process.env.TABWORKS_PORT || "9527";
+const BRIDGE_HOST =
+  process.env.TABWORKS_BRIDGE_HOST ??
+  `http://127.0.0.1:${DEFAULT_BRIDGE_PORT}`;
 
 export async function loadRoutine(
   site: string,
@@ -142,6 +146,96 @@ export function parseArgv(argv: string[]): {
 
 export function parseFlags(argv: string[]): Record<string, string> {
   return parseArgv(argv).flags;
+}
+
+async function callBridge<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BRIDGE_HOST}${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-TabWorks-Bridge": "1",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = (await res.json()) as { error?: string };
+  if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+  return json as T;
+}
+
+export async function executeUiRecord(argv: string[]): Promise<string> {
+  const { flags, positionals } = parseArgv(argv);
+  const op = positionals[0];
+
+  if (!op || !["start", "stop", "status"].includes(op)) {
+    throw new Error(
+      "用法：tw ui-record <start|stop|status> [sessionId] [--tab-id <id>]",
+    );
+  }
+
+  if (op === "start") {
+    const result = await callBridge<{
+      sessionId: string;
+      tabId?: number;
+      url?: string;
+      title?: string;
+      outDir: string;
+    }>("/recording/start", {
+      tabId: flags["tab-id"] ? Number(flags["tab-id"]) : undefined,
+    });
+    return [
+      "UI 录制已开始",
+      `sessionId：${result.sessionId}`,
+      `tabId：${result.tabId ?? "当前标签页"}`,
+      `标题：${result.title || "（无）"}`,
+      `URL：${result.url || "（未知）"}`,
+      "",
+      `停止：tw ui-record stop ${result.sessionId}`,
+    ].join("\n");
+  }
+
+  if (op === "stop") {
+    const sessionId = positionals[1] ?? flags.session;
+    if (!sessionId) throw new Error("停止录制需要 sessionId");
+    const result = await callBridge<{
+      sessionId: string;
+      eventCount: number;
+      outDir: string;
+      url?: string;
+      title?: string;
+    }>("/recording/stop", { sessionId });
+    return [
+      "UI 录制已停止",
+      `sessionId：${result.sessionId}`,
+      `事件数：${result.eventCount}`,
+      `标题：${result.title || "（无）"}`,
+      `URL：${result.url || "（未知）"}`,
+      `产物：${result.outDir}/session.json`,
+    ].join("\n");
+  }
+
+  const status = await callBridge<{
+    recordings: Array<{
+      sessionId: string;
+      tabId?: number;
+      url?: string;
+      title?: string;
+      startedAt: string;
+      eventCount: number;
+      outDir: string;
+    }>;
+  }>("/recording/status", {});
+
+  if (!status.recordings.length) return "当前没有进行中的 UI 录制。";
+  return status.recordings
+    .map((item) =>
+      [
+        `${item.sessionId}  tab=${item.tabId ?? "?"}  events=${item.eventCount}`,
+        `  标题：${item.title || "（无）"}`,
+        `  URL：${item.url || "（未知）"}`,
+        `  开始：${item.startedAt}`,
+      ].join("\n"),
+    )
+    .join("\n\n");
 }
 
 export async function executeExplore(argv: string[]): Promise<string> {
