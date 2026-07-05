@@ -250,21 +250,27 @@ async function cdpMouseClick(tabId, x, y) {
     type: "mouseMoved",
     x: point.x,
     y: point.y,
-    button: "none"
+    button: "none",
+    buttons: 0,
+    pointerType: "mouse"
   });
   await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
     type: "mousePressed",
     x: point.x,
     y: point.y,
     button: "left",
-    clickCount: 1
+    buttons: 1,
+    clickCount: 1,
+    pointerType: "mouse"
   });
   await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x: point.x,
     y: point.y,
     button: "left",
-    clickCount: 1
+    buttons: 0,
+    clickCount: 1,
+    pointerType: "mouse"
   });
   return { clicked: true, ...point };
 }
@@ -564,16 +570,29 @@ function isDuplicateDragEvent(previous, next) {
     return false;
   return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
 }
-function shouldSkipDuplicateRecordingEvent(recording, event) {
-  if (event?.kind !== "drag")
+function sameClickGeometry(a, b) {
+  return closeNumber(a?.x, b?.x, 12) && closeNumber(a?.y, b?.y, 12);
+}
+function isDuplicateClickEvent(previous, next) {
+  if (previous?.kind !== "click" || next?.kind !== "click")
     return false;
+  const previousAt = recordingEventTime(previous);
+  const nextAt = recordingEventTime(next);
+  if (previousAt !== null && nextAt !== null && Math.abs(nextAt - previousAt) > 350) {
+    return false;
+  }
+  if (!sameRecordingFrame(previous, next))
+    return false;
+  return sameClickGeometry(previous, next);
+}
+function shouldSkipDuplicateRecordingEvent(recording, event) {
   const recentEvents = (recording?.events || []).slice(-8);
-  return recentEvents.some((previous) => isDuplicateDragEvent(previous, event));
+  return recentEvents.some((previous) => isDuplicateDragEvent(previous, event) || isDuplicateClickEvent(previous, event));
 }
 function dedupeDragEvents(events = []) {
   const normalized = [];
   for (const event of events) {
-    if (event?.kind === "drag" && normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event))) {
+    if (normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event) || isDuplicateClickEvent(previous, event))) {
       continue;
     }
     normalized.push(event);
@@ -882,9 +901,16 @@ function storageGet(keys) {
 function storageSet(items) {
   return new Promise((resolve) => chrome.storage.local.set(items, resolve));
 }
+function storageRemove(keys) {
+  return new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+}
 async function getLastUiRecording() {
   const result = await storageGet([LAST_UI_RECORDING_KEY]);
   return result[LAST_UI_RECORDING_KEY] || null;
+}
+async function clearLastUiRecording() {
+  await storageRemove(LAST_UI_RECORDING_KEY);
+  return { cleared: true };
 }
 function recordingStatus(item) {
   if (!item)
@@ -1016,7 +1042,8 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
   }
   const results = [];
   let previousEvent = null;
-  for (const chunk of replayChunks) {
+  for (let chunkIndex = 0;chunkIndex < replayChunks.length; chunkIndex += 1) {
+    const chunk = replayChunks[chunkIndex];
     const firstEvent = chunk.events[0];
     const delay = replayDelayMs(previousEvent, firstEvent, options);
     if (delay > 0)
@@ -1025,7 +1052,10 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
       const response = await sendMessageToTabFrame(targetTabId, chunk.frameId, {
         type: "tabworks-recording-replay",
         events: chunk.events,
-        options: options || {}
+        options: {
+          ...options || {},
+          hideCursorOnComplete: chunkIndex === replayChunks.length - 1
+        }
       });
       results.push({
         frameId: chunk.frameId,
@@ -1536,6 +1566,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       recording: active ? recordingStatus(active) : null,
       lastRecording
     })).then(sendResponse).catch((err) => sendResponse({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    }));
+    return true;
+  }
+  if (message?.type === "tabworks-ui-recording-clear") {
+    clearLastUiRecording().then((data) => ({ ok: true, ...data })).then(sendResponse).catch((err) => sendResponse({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    }));
+    return true;
+  }
+  if (message?.type === "tabworks-recording-trusted-click") {
+    const tabId2 = sender.tab?.id;
+    if (!Number.isInteger(tabId2)) {
+      sendResponse({ ok: false, error: "无法定位当前标签页" });
+      return true;
+    }
+    cdpMouseClick(tabId2, message.x, message.y).then((data) => ({ ok: true, ...data })).then(sendResponse).catch((err) => sendResponse({
       ok: false,
       error: err instanceof Error ? err.message : String(err)
     }));

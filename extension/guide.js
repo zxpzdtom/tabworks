@@ -258,7 +258,6 @@ ${examples}
     const method = row.querySelector(".method")?.textContent?.trim() || "";
     const endpoint = row.querySelector(".endpoint")?.textContent?.trim() || "";
     const purpose = row.querySelector(".muted")?.textContent?.trim().replace(/\s+/g, " ") || "";
-    const dependency = row.querySelector(".tag")?.textContent?.trim() || "";
     if (!method || !endpoint)
       return null;
     return `TabWorks Bridge 接口
@@ -267,7 +266,6 @@ ${examples}
 方法: ${method}
 接口: ${endpoint}
 用途: ${purpose}
-依赖: ${dependency}
 
 fetch 示例:
 ${fetchSnippet(method, endpoint)}

@@ -99,7 +99,6 @@
                                 <span>方法</span>
                                 <span>接口</span>
                                 <span>用途</span>
-                                <span>依赖</span>
                                 <span>操作</span>
                             </div>
                             <div class="api-row" role="row">
@@ -110,7 +109,6 @@
                                 <span class="method mono">GET</span>
                                 <code class="endpoint">/status</code>
                                 <span class="muted">检查本地服务和扩展连接状态。</span>
-                                <span class="tag">无</span>
                                 <button class="btn small copy" data-copy="GET /status">
                                     复制
                                 </button>
@@ -123,7 +121,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/open</code>
                                 <span class="muted">创建自动化窗口、打开 URL、跳转、选择或关闭标签页。</span>
-                                <span class="tag">扩展可用</span>
                                 <button class="btn small copy" data-copy="POST /open">
                                     复制
                                 </button>
@@ -136,7 +133,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/inspect</code>
                                 <span class="muted">读取页面标题、文本和链接摘要。</span>
-                                <span class="tag">页面已加载</span>
                                 <button class="btn small copy" data-copy="POST /inspect">
                                     复制
                                 </button>
@@ -149,7 +145,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/run-js</code>
                                 <span class="muted">在目标页面上下文运行 JavaScript，读取 DOM 或调用页面函数。</span>
-                                <span class="tag">页面已打开</span>
                                 <button class="btn small copy" data-copy="POST /run-js">
                                     复制
                                 </button>
@@ -162,7 +157,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/tap</code>
                                 <span class="muted">点击指定 selector；<code>mode: "mouse"</code> 会走 CDP 鼠标事件，适合 antd Select。</span>
-                                <span class="tag">页面已打开</span>
                                 <button class="btn small copy" data-copy="POST /tap">
                                     复制
                                 </button>
@@ -175,7 +169,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/press</code>
                                 <span class="muted">按住 selector 或坐标一段时间后释放，用于录制脚本里的长按手势。</span>
-                                <span class="tag">debugger 权限</span>
                                 <button class="btn small copy" data-copy="POST /press">
                                     复制
                                 </button>
@@ -188,7 +181,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/drag</code>
                                 <span class="muted">从 selector 或坐标开始拖到指定位置，也支持 deltaX/deltaY。</span>
-                                <span class="tag">debugger 权限</span>
                                 <button class="btn small copy" data-copy="POST /drag">
                                     复制
                                 </button>
@@ -201,7 +193,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/key</code>
                                 <span class="muted">发送可信键盘事件；录制脚本会用它稳定回放 dnd-kit 排序。</span>
-                                <span class="tag">debugger 权限</span>
                                 <button class="btn small copy" data-copy="POST /key">
                                     复制
                                 </button>
@@ -214,7 +205,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/input</code>
                                 <span class="muted">兼容 input、textarea、select 和 contenteditable；受控组件会触发 input/change。</span>
-                                <span class="tag">页面已打开</span>
                                 <button class="btn small copy" data-copy="POST /input">
                                     复制
                                 </button>
@@ -227,7 +217,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/request</code>
                                 <span class="muted">在页面上下文发起 fetch，例如请求 <code>/api/animals</code> 并携带当前登录态。</span>
-                                <span class="tag">页面权限</span>
                                 <button class="btn small copy" data-copy="POST /request">
                                     复制
                                 </button>
@@ -240,7 +229,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/capture</code>
                                 <span class="muted">截取当前视口或整页截图，可返回图片内容或保存到文件。</span>
-                                <span class="tag">debugger 权限</span>
                                 <button class="btn small copy" data-copy="POST /capture">
                                     复制
                                 </button>
@@ -253,7 +241,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/cookies</code>
                                 <span class="muted">按 URL 或域名读取 cookie。</span>
-                                <span class="tag">cookies 权限</span>
                                 <button class="btn small copy" data-copy="POST /cookies">
                                     复制
                                 </button>
@@ -266,7 +253,6 @@
                                 <span class="method mono">POST</span>
                                 <code class="endpoint">/sessions</code>
                                 <span class="muted">查看自动化窗口和标签页状态。</span>
-                                <span class="tag">本地服务</span>
                                 <button class="btn small copy" data-copy="POST /sessions">
                                     复制
                                 </button>

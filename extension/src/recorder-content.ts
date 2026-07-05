@@ -1,6 +1,6 @@
 // @ts-nocheck
 (() => {
-  const RECORDER_SCRIPT_VERSION = 12;
+  const RECORDER_SCRIPT_VERSION = 13;
   if (globalThis.__tabworksRecorderVersion === RECORDER_SCRIPT_VERSION) return;
   globalThis.__tabworksRecorderVersion = RECORDER_SCRIPT_VERSION;
   globalThis.__tabworksRecorderLoaded = true;
@@ -14,13 +14,16 @@
   let suppressClickUntil = 0;
   let replayCursor = null;
   let replayCursorPoint = null;
+  let replayCursorSeq = 0;
   const inputTimers = new WeakMap();
   const handledEvents = new WeakSet();
   const recentRecordedEvents = [];
   const MAIN_EVENT_CHANNEL = "__tabworksRecorderMainEvent";
   const MAIN_ACK_CHANNEL = "__tabworksRecorderMainAck";
+  const REPLAY_CURSOR_CHANNEL = "__tabworksReplayCursor";
   const DRAG_DISTANCE_PX = 12;
   const LONG_PRESS_MS = 650;
+  const replayCursorPending = new Map();
 
   function now() {
     return new Date().toISOString();
@@ -242,6 +245,82 @@
     return context;
   }
 
+  function isTopFrame() {
+    try {
+      return window.top === window;
+    } catch {
+      return true;
+    }
+  }
+
+  function frameViewportPointFromChildMessage(source, payload) {
+    const point = payload?.point || {};
+    const x = Number(point.x);
+    const y = Number(point.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (!source || source === window) return { x, y };
+    const context = frameContextForMessageSource(source, payload);
+    const rect = context?.frameRect;
+    if (
+      !rect ||
+      !Number.isFinite(Number(rect.x)) ||
+      !Number.isFinite(Number(rect.y))
+    ) {
+      return { x, y };
+    }
+    return {
+      x: Math.round(Number(rect.x) + x),
+      y: Math.round(Number(rect.y) + y),
+    };
+  }
+
+  function postReplayCursorAck(target, requestId, ok = true, error = "") {
+    if (!target || !requestId) return;
+    try {
+      target.postMessage(
+        {
+          [REPLAY_CURSOR_CHANNEL]: true,
+          ack: true,
+          requestId,
+          ok,
+          error,
+        },
+        "*",
+      );
+    } catch {
+      /* The requesting frame may have navigated away. */
+    }
+  }
+
+  function sendReplayCursorRequestToParent(payload, timeoutMs = 1800) {
+    if (isTopFrame()) return Promise.resolve();
+    const requestId =
+      payload.requestId || `${Date.now()}-${++replayCursorSeq}-${Math.random().toString(36).slice(2, 7)}`;
+    const message = {
+      ...payload,
+      [REPLAY_CURSOR_CHANNEL]: true,
+      requestId,
+      frameContext: getFrameContext(),
+    };
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        replayCursorPending.delete(requestId);
+        resolve({ ok: false, error: "cursor ack timeout" });
+      }, timeoutMs);
+      replayCursorPending.set(requestId, (response) => {
+        clearTimeout(timeout);
+        resolve(response);
+      });
+      try {
+        window.parent.postMessage(message, "*");
+      } catch {
+        clearTimeout(timeout);
+        replayCursorPending.delete(requestId);
+        resolve({ ok: false, error: "cursor postMessage failed" });
+      }
+    });
+  }
+
   function send(event) {
     if (!recording || replaying) return;
     if (isDuplicateRecordedEvent(event)) return;
@@ -282,7 +361,19 @@
       recentRecordedEvents.shift();
     }
     if (recentRecordedEvents.some((item) => item.key === key)) return true;
-    recentRecordedEvents.push({ key, timestamp });
+    if (
+      event.kind === "click" &&
+      recentRecordedEvents.some(
+        (item) =>
+          item.event?.kind === "click" &&
+          timestamp - item.timestamp <= 350 &&
+          closeNumber(item.event?.x, event.x, 12) &&
+          closeNumber(item.event?.y, event.y, 12),
+      )
+    ) {
+      return true;
+    }
+    recentRecordedEvents.push({ key, timestamp, event });
     return false;
   }
 
@@ -383,6 +474,42 @@
       offsetY: Math.round((event.clientY - rect.top) * 100) / 100,
       width: Math.round(rect.width * 100) / 100,
       height: Math.round(rect.height * 100) / 100,
+    };
+  }
+
+  function antCascaderMetaFromTarget(target, event) {
+    const item = target?.closest?.(".ant-cascader-menu-item");
+    if (!item) return null;
+    const checkbox =
+      item.querySelector(".ant-cascader-checkbox-inner") ||
+      item.querySelector(".ant-cascader-checkbox");
+    const content = item.querySelector(".ant-cascader-menu-item-content") || item;
+    const checkboxRect = checkbox?.getBoundingClientRect?.();
+    return {
+      itemText: cleanLabel(content.innerText || content.textContent || ""),
+      itemSelector: deepCssPath(item, 10),
+      checkboxSelector: checkbox ? deepCssPath(checkbox, 10) : "",
+      clickedCheckbox:
+        Boolean(checkboxRect) &&
+        Number.isFinite(Number(checkboxRect.left)) &&
+        Number(event?.clientX) >= checkboxRect.left - 8 &&
+        Number(event?.clientX) <= checkboxRect.right + 8 &&
+        Number(event?.clientY) >= checkboxRect.top - 8 &&
+        Number(event?.clientY) <= checkboxRect.bottom + 8,
+    };
+  }
+
+  function antSelectRemoveMetaFromTarget(target) {
+    const remove = target?.closest?.(".ant-select-selection-item-remove");
+    if (!remove) return null;
+    const item = remove.closest(".ant-select-selection-item");
+    if (!item) return null;
+    const content =
+      item.querySelector(".ant-select-selection-item-content") || item;
+    return {
+      itemText: cleanLabel(content.innerText || content.textContent || ""),
+      itemSelector: deepCssPath(item, 10),
+      removeSelector: deepCssPath(remove, 10),
     };
   }
 
@@ -495,11 +622,21 @@
     const meta = targetMetaFromEvent(event);
     if (!meta) return;
     const point = eventPoint(event);
+    const target = targetElementFromEvent(event);
+    const localPoint = localPointForEvent(event, target);
+    const antCascader = antCascaderMetaFromTarget(target, event);
+    const antSelectRemove = antSelectRemoveMetaFromTarget(target);
     const clickEvent = {
       kind: "click",
       element: meta,
       x: point.x,
       y: point.y,
+      antCascader,
+      antSelectRemove,
+      offsetX: localPoint?.offsetX,
+      offsetY: localPoint?.offsetY,
+      elementWidth: localPoint?.width,
+      elementHeight: localPoint?.height,
       button: event.button,
     };
     if (!recording) {
@@ -636,11 +773,23 @@
 
     if (!meta) return;
     if (payload.kind === "click") {
+      const localPoint = localPointForEvent({ clientX: point.x, clientY: point.y }, target);
+      const antCascader = antCascaderMetaFromTarget(target, {
+        clientX: point.x,
+        clientY: point.y,
+      });
+      const antSelectRemove = antSelectRemoveMetaFromTarget(target);
       send({
         kind: "click",
         element: meta,
         x: point.x,
         y: point.y,
+        antCascader,
+        antSelectRemove,
+        offsetX: localPoint?.offsetX,
+        offsetY: localPoint?.offsetY,
+        elementWidth: localPoint?.width,
+        elementHeight: localPoint?.height,
         button: payload.button,
         source: "main-world",
         ...frameOverrides,
@@ -657,10 +806,58 @@
     }
   }
 
+  async function handleReplayCursorMessage(event, data) {
+    if (data.ack) {
+      const resolve = replayCursorPending.get(data.requestId);
+      if (resolve) {
+        replayCursorPending.delete(data.requestId);
+        resolve(data);
+      }
+      return;
+    }
+
+    const target = event.source;
+    const point = frameViewportPointFromChildMessage(target, data);
+    if (!point) {
+      postReplayCursorAck(target, data.requestId, false, "invalid cursor point");
+      return;
+    }
+
+    try {
+      if (isTopFrame()) {
+        if (data.action === "hide") {
+          hideLocalReplayCursor();
+        } else if (data.action === "pulse") {
+          pulseLocalReplayCursor(point);
+        } else {
+          await moveLocalReplayCursor(point, data.options || {});
+        }
+      } else {
+        await sendReplayCursorRequestToParent({
+          ...data,
+          point,
+          frameContext: getFrameContext(),
+        });
+      }
+      postReplayCursorAck(target, data.requestId, true);
+    } catch (err) {
+      postReplayCursorAck(
+        target,
+        data.requestId,
+        false,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   window.addEventListener(
     "message",
     (event) => {
       const data = event.data;
+      if (data?.[REPLAY_CURSOR_CHANNEL] === true) {
+        handleReplayCursorMessage(event, data);
+        return;
+      }
       if (!data || data[MAIN_EVENT_CHANNEL] !== true) return;
       const sameWindow = event.source === window;
       const isChildFrame = window.top !== window;
@@ -941,6 +1138,20 @@
     return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
   }
 
+  function isDuplicateClickEvent(previous, next) {
+    if (previous?.kind !== "click" || next?.kind !== "click") return false;
+    const previousAt = eventTime(previous);
+    const nextAt = eventTime(next);
+    if (
+      previousAt !== null &&
+      nextAt !== null &&
+      Math.abs(nextAt - previousAt) > 350
+    ) {
+      return false;
+    }
+    return closeNumber(previous?.x, next?.x, 12) && closeNumber(previous?.y, next?.y, 12);
+  }
+
   function findEventElement(event) {
     const selector = selectorForEvent(event);
     return selector ? deepQuerySelector(selector) : null;
@@ -1010,7 +1221,7 @@
     return replayCursor;
   }
 
-  async function moveReplayCursor(point, options = {}) {
+  async function moveLocalReplayCursor(point, _options = {}) {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
     const cursor = ensureReplayCursor();
     const from = replayCursorPoint || point;
@@ -1022,19 +1233,67 @@
     cursor.style.transform = `translate3d(${Math.round(point.x - 12)}px, ${Math.round(point.y - 12)}px, 0)`;
     replayCursorPoint = point;
     await wait(duration);
-    if (options.click) {
-      cursor.classList.add("click");
-      await wait(220);
-      cursor.classList.remove("click");
-    }
   }
 
-  function hideReplayCursor() {
+  function pulseLocalReplayCursor(point) {
+    const cursor = ensureReplayCursor();
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      cursor.style.transitionDuration = "0ms, 120ms";
+      cursor.style.opacity = "1";
+      cursor.style.transform = `translate3d(${Math.round(point.x - 12)}px, ${Math.round(point.y - 12)}px, 0)`;
+      replayCursorPoint = point;
+    }
+    cursor.classList.remove("click");
+    void cursor.offsetWidth;
+    cursor.classList.add("click");
+    setTimeout(() => cursor.classList.remove("click"), 280);
+  }
+
+  function hideLocalReplayCursor() {
     if (!replayCursor) return;
     replayCursor.style.opacity = "0";
     replayCursor.style.transform = "translate3d(-40px, -40px, 0)";
     replayCursor.classList.remove("click");
     replayCursorPoint = null;
+  }
+
+  async function moveReplayCursor(point, options = {}) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    if (isTopFrame()) {
+      await moveLocalReplayCursor(point, options);
+      return;
+    }
+    await sendReplayCursorRequestToParent({
+      action: "move",
+      point,
+      options,
+    });
+  }
+
+  async function pulseReplayCursor(point) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    if (isTopFrame()) {
+      pulseLocalReplayCursor(point);
+      return;
+    }
+    await sendReplayCursorRequestToParent(
+      {
+        action: "pulse",
+        point,
+      },
+      180,
+    );
+  }
+
+  async function hideReplayCursor() {
+    if (isTopFrame()) {
+      hideLocalReplayCursor();
+      return;
+    }
+    await sendReplayCursorRequestToParent({
+      action: "hide",
+      point: replayCursorPoint || { x: -40, y: -40 },
+    });
   }
 
   function showToast(message, kind = "success") {
@@ -1143,8 +1402,242 @@
     if (mouseType !== type) el.dispatchEvent(new MouseEvent(mouseType, init));
   }
 
+  function dispatchMouseLike(el, type, point, options = {}) {
+    el.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        detail: options.detail ?? 1,
+        clientX: point.x,
+        clientY: point.y,
+        button: options.button ?? 0,
+        buttons: options.buttons ?? 0,
+        ctrlKey: Boolean(options.ctrlKey),
+        metaKey: Boolean(options.metaKey),
+        altKey: Boolean(options.altKey),
+        shiftKey: Boolean(options.shiftKey),
+      }),
+    );
+  }
+
+  function topViewportPoint(point) {
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (isTopFrame()) return { x, y };
+    const context = getFrameContext();
+    const rect = context?.frameRect;
+    if (
+      rect &&
+      Number.isFinite(Number(rect.x)) &&
+      Number.isFinite(Number(rect.y))
+    ) {
+      return {
+        x: Math.round(Number(rect.x) + x),
+        y: Math.round(Number(rect.y) + y),
+      };
+    }
+    return { x, y };
+  }
+
+  function trustedReplayClick(point) {
+    const topPoint = topViewportPoint(point);
+    if (!topPoint) return Promise.resolve({ ok: false, error: "invalid point" });
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        {
+          type: "tabworks-recording-trusted-click",
+          x: topPoint.x,
+          y: topPoint.y,
+        },
+        (response) => {
+          const err = chrome.runtime.lastError;
+          if (err) {
+            resolve({ ok: false, error: err.message });
+            return;
+          }
+          resolve(response || { ok: false, error: "empty response" });
+        },
+      );
+    });
+  }
+
+  function isVisibleElement(el) {
+    if (!el?.getBoundingClientRect) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      !el.closest?.(".ant-select-dropdown-hidden")
+    );
+  }
+
+  function findAntCascaderClickTarget(event) {
+    const meta = event?.antCascader;
+    if (!meta?.clickedCheckbox) return null;
+    const candidates = [
+      meta.checkboxSelector ? deepQuerySelector(meta.checkboxSelector) : null,
+      meta.itemSelector ? deepQuerySelector(meta.itemSelector) : null,
+    ].filter(Boolean).filter(isVisibleElement);
+    const menus = Array.from(
+      document.querySelectorAll(".ant-cascader-menu-item"),
+    ).filter(isVisibleElement);
+    if (meta.itemText) {
+      const matched = menus.find((item) => {
+        const content =
+          item.querySelector(".ant-cascader-menu-item-content") || item;
+        return cleanLabel(content.innerText || content.textContent || "") === meta.itemText;
+      });
+      if (matched) candidates.unshift(matched);
+    }
+
+    for (const candidate of candidates) {
+      const checkbox =
+        candidate.matches?.(".ant-cascader-checkbox-inner, .ant-cascader-checkbox")
+          ? candidate
+          : candidate.querySelector?.(".ant-cascader-checkbox-inner") ||
+            candidate.querySelector?.(".ant-cascader-checkbox");
+      if (checkbox && isVisibleElement(checkbox)) {
+        return { el: checkbox, mode: "ant-cascader-checkbox" };
+      }
+    }
+    return null;
+  }
+
+  async function waitForAntCascaderClickTarget(event, timeoutMs = 1200) {
+    const startedAt = performance.now();
+    let target = findAntCascaderClickTarget(event);
+    while (!target && performance.now() - startedAt < timeoutMs) {
+      await wait(50);
+      target = findAntCascaderClickTarget(event);
+    }
+    return target;
+  }
+
+  function findAntSelectRemoveTarget(event) {
+    const meta = event?.antSelectRemove;
+    if (!meta?.itemText) return null;
+    const directRemove = meta.removeSelector ? deepQuerySelector(meta.removeSelector) : null;
+    if (directRemove && isVisibleElement(directRemove)) {
+      return { el: directRemove, mode: "ant-select-remove" };
+    }
+    const items = Array.from(
+      document.querySelectorAll(".ant-select-selection-item"),
+    ).filter(isVisibleElement);
+    const matched = items.find((item) => {
+      const content =
+        item.querySelector(".ant-select-selection-item-content") || item;
+      return cleanLabel(content.innerText || content.textContent || "") === meta.itemText;
+    });
+    const remove = matched?.querySelector?.(".ant-select-selection-item-remove");
+    if (remove && isVisibleElement(remove)) {
+      return { el: remove, mode: "ant-select-remove" };
+    }
+    return null;
+  }
+
+  async function waitForAntSelectRemoveTarget(event, timeoutMs = 800) {
+    const startedAt = performance.now();
+    let target = findAntSelectRemoveTarget(event);
+    while (!target && performance.now() - startedAt < timeoutMs) {
+      await wait(50);
+      target = findAntSelectRemoveTarget(event);
+    }
+    return target;
+  }
+
+  function replayClickTarget(el) {
+    const antSelect = el?.closest?.(".ant-select, .ant-cascader");
+    const selector = antSelect?.querySelector?.(".ant-select-selector");
+    if (selector) {
+      return {
+        el: selector,
+        mode: antSelect.matches(".ant-cascader") ? "ant-cascader" : "ant-select",
+      };
+    }
+    return {
+      el:
+      el?.closest?.(
+        "button,a,label,input,textarea,select,[role='button'],[role='option'],[role='menuitem'],[role='menuitemcheckbox'],.ant-cascader-menu-item,.ant-select-item-option",
+      ) || el,
+      mode: "default",
+    };
+  }
+
+  function dispatchReplayClick(target, point, event = {}) {
+    const el = target?.el || target;
+    const mode = target?.mode || "default";
+    const button = Number.isInteger(event.button) ? event.button : 0;
+    dispatchPointerLike(el, "pointermove", point, {
+      buttons: 0,
+      pointerType: event.pointerType,
+    });
+    dispatchMouseLike(el, "mousemove", point, { button, buttons: 0 });
+    dispatchPointerLike(el, "pointerdown", point, {
+      button,
+      buttons: button === 0 ? 1 : 2,
+      pointerType: event.pointerType,
+    });
+    dispatchMouseLike(el, "mousedown", point, {
+      button,
+      buttons: button === 0 ? 1 : 2,
+    });
+    if (button === 0 && typeof el.focus === "function") {
+      try {
+        el.focus({ preventScroll: true });
+      } catch {
+        el.focus();
+      }
+    }
+    dispatchPointerLike(el, "pointerup", point, {
+      button,
+      buttons: 0,
+      pointerType: event.pointerType,
+    });
+    dispatchMouseLike(el, "mouseup", point, { button, buttons: 0 });
+    if (mode === "ant-select" || mode === "ant-cascader") {
+      return;
+    }
+    if (button === 0 && typeof el.click === "function") {
+      el.click();
+    } else {
+      dispatchMouseLike(el, "click", point, { button, buttons: 0 });
+    }
+  }
+
   function centerOf(el) {
     const rect = el.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    };
+  }
+
+  function pointForReplayClick(el, event) {
+    const rect = el.getBoundingClientRect();
+    const offsetX = Number(event?.offsetX);
+    const offsetY = Number(event?.offsetY);
+    const recordedWidth = Number(event?.elementWidth);
+    const recordedHeight = Number(event?.elementHeight);
+    if (Number.isFinite(offsetX) && Number.isFinite(offsetY)) {
+      const scaleX =
+        Number.isFinite(recordedWidth) && recordedWidth > 0
+          ? rect.width / recordedWidth
+          : 1;
+      const scaleY =
+        Number.isFinite(recordedHeight) && recordedHeight > 0
+          ? rect.height / recordedHeight
+          : 1;
+      return {
+        x: Math.round(rect.left + offsetX * scaleX),
+        y: Math.round(rect.top + offsetY * scaleY),
+      };
+    }
     return {
       x: Math.round(rect.left + rect.width / 2),
       y: Math.round(rect.top + rect.height / 2),
@@ -1162,8 +1655,8 @@
       await moveReplayCursor(start);
       dispatchPointerLike(el, "pointerdown", start, { pointerType: event.pointerType });
       await wait(Math.max(120, Math.min(Number(event.durationMs || 700), 1500)));
+      await pulseReplayCursor(start);
       dispatchPointerLike(el, "pointerup", start, { buttons: 0, pointerType: event.pointerType });
-      await moveReplayCursor(start, { click: true });
       return { ok: true, kind: event.kind, selector };
     }
     const end = {
@@ -1194,12 +1687,35 @@
   async function replayEvent(event) {
     if (event.kind === "click") {
       const selector = selectorForEvent(event);
-      const el = findEventElement(event);
+      let target =
+        (await waitForAntSelectRemoveTarget(event)) ||
+        (await waitForAntCascaderClickTarget(event));
+      const el = target ? target.el : findEventElement(event);
       if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
-      el.scrollIntoView({ block: "center", inline: "center" });
+      if (typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ block: "center", inline: "center" });
+      }
       await wait(80);
-      await moveReplayCursor(centerOf(el), { click: true });
-      el.click();
+      target = target || replayClickTarget(el);
+      const point =
+        target.mode === "ant-cascader-checkbox" ||
+        target.mode === "ant-select-remove"
+          ? centerOf(target.el)
+          : pointForReplayClick(target.el, event);
+      await moveReplayCursor(point);
+      await pulseReplayCursor(point);
+      if (
+        target.mode === "ant-select" ||
+        target.mode === "ant-cascader" ||
+        target.mode === "ant-cascader-checkbox" ||
+        target.mode === "ant-select-remove"
+      ) {
+        const trusted = await trustedReplayClick(point);
+        if (trusted?.ok !== false) {
+          return { ok: true, kind: event.kind, selector, trustedClick: true };
+        }
+      }
+      dispatchReplayClick(target, point, event);
       return { ok: true, kind: event.kind, selector };
     }
 
@@ -1209,12 +1725,16 @@
       if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
       el.scrollIntoView({ block: "center", inline: "center" });
       await wait(80);
-      const point = centerOf(el);
-      await moveReplayCursor(point, { click: true });
+      const target = replayClickTarget(el);
+      const point = centerOf(target.el);
+      await moveReplayCursor(point);
       const type = event.kind === "double-click" ? "dblclick" : "contextmenu";
-      el.dispatchEvent(new MouseEvent(type, {
+      await pulseReplayCursor(point);
+      target.el.dispatchEvent(new MouseEvent(type, {
         bubbles: true,
         cancelable: true,
+        composed: true,
+        view: window,
         clientX: point.x,
         clientY: point.y,
         button: event.kind === "context-menu" ? 2 : 0,
@@ -1248,8 +1768,12 @@
       if (!el) return { ok: false, kind: event.kind, selector, error: "元素未找到" };
       el.scrollIntoView({ block: "center", inline: "center" });
       await wait(80);
-      await moveReplayCursor(centerOf(el), { click: true });
-      if (typeof el.focus === "function") el.focus();
+      const target = replayClickTarget(el);
+      const point = centerOf(target.el);
+      await moveReplayCursor(point);
+      await pulseReplayCursor(point);
+      if (typeof target.el.focus === "function") target.el.focus();
+      else if (typeof el.focus === "function") el.focus();
       if (el instanceof HTMLSelectElement && Array.isArray(event.value)) {
         for (const option of el.options) {
           option.selected = event.value.includes(option.value);
@@ -1272,7 +1796,9 @@
       if (!el) return { ok: false, kind: event.kind, selector, error: "表单未找到" };
       el.scrollIntoView({ block: "center", inline: "center" });
       await wait(80);
-      await moveReplayCursor(centerOf(el), { click: true });
+      const point = centerOf(el);
+      await moveReplayCursor(point);
+      await pulseReplayCursor(point);
       if (typeof el.requestSubmit === "function") el.requestSubmit();
       else el.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       return { ok: true, kind: event.kind, selector };
@@ -1289,8 +1815,13 @@
     for (const event of playable) {
       const previous = normalized[normalized.length - 1];
       if (
-        event.kind === "drag" &&
-        normalized.slice(-8).some((item) => isDuplicateDragEvent(item, event))
+        normalized
+          .slice(-8)
+          .some(
+            (item) =>
+              isDuplicateDragEvent(item, event) ||
+              isDuplicateClickEvent(item, event),
+          )
       ) {
         continue;
       }
@@ -1340,7 +1871,9 @@
       }
     } finally {
       replaying = false;
-      hideReplayCursor();
+      if (options.hideCursorOnComplete !== false) {
+        await hideReplayCursor();
+      }
     }
 
     return {

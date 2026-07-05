@@ -20,7 +20,10 @@
       storage: {
         local: {
           get: (_keys, callback) => callback?.({}),
-          set() {}
+          set() {},
+          remove(_keys, callback) {
+            callback?.();
+          }
         }
       },
       tabs: {
@@ -50,6 +53,7 @@
   var recorderSecondary = document.getElementById("recorder-secondary");
   var recorderReplayBtn = document.getElementById("recorder-replay");
   var recorderDownloadBtn = document.getElementById("recorder-download");
+  var recorderClearBtn = document.getElementById("recorder-clear");
   var APP_URL = "http://localhost:9527";
   var STATUS_URL = `${APP_URL}/status`;
   var port = chrome.runtime.connect({ name: "popup" });
@@ -115,8 +119,8 @@
     const tabCount = sessions.reduce((sum, item) => sum + (item.tabCount || 0), 0);
     sessionsEl.textContent = `${sessions.length} 个窗口 / ${tabCount} 个标签页`;
   }
-  function openGuide(hash = "interfaces") {
-    chrome.tabs.create({ url: chrome.runtime.getURL(`guide.html#${hash}`) });
+  function openGuide() {
+    chrome.tabs.create({ url: chrome.runtime.getURL("guide.html") });
   }
   function shortSessionId(sessionId = "") {
     if (!sessionId)
@@ -134,6 +138,8 @@
     recorderStopBtn.hidden = !isRecording;
     recorderStartBtn.disabled = isRecording;
     recorderStopBtn.disabled = !isRecording;
+    recorderClearBtn.hidden = isRecording || !hasSavedRecording;
+    recorderClearBtn.disabled = isRecording || !hasSavedRecording;
     recorderStartBtn.textContent = recording ? "录制中" : lastRecordingResult ? "重新录制" : "开始录制";
     recorderStartBtn.classList.toggle("primary", !lastRecordingResult);
     recorderReplayBtn.classList.toggle("primary", Boolean(lastRecordingResult));
@@ -212,7 +218,7 @@
       return;
     chrome.tabs.create({ url: APP_URL });
   });
-  guideBtn.addEventListener("click", () => openGuide("interfaces"));
+  guideBtn.addEventListener("click", () => openGuide());
   recorderStartBtn.addEventListener("click", async () => {
     recorderStartBtn.disabled = true;
     recorderError = "";
@@ -334,10 +340,20 @@
     }
     return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
   }
+  function isDuplicateClickEvent(previous, next) {
+    if (previous?.kind !== "click" || next?.kind !== "click")
+      return false;
+    const previousAt = eventTime(previous);
+    const nextAt = eventTime(next);
+    if (previousAt !== null && nextAt !== null && Math.abs(nextAt - previousAt) > 350) {
+      return false;
+    }
+    return closeNumber(previous?.x, next?.x, 12) && closeNumber(previous?.y, next?.y, 12);
+  }
   function dedupeDragEvents(events = []) {
     const normalized = [];
     for (const event of events) {
-      if (event?.kind === "drag" && normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event))) {
+      if (normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event) || isDuplicateClickEvent(previous, event))) {
         continue;
       }
       normalized.push(event);
@@ -566,6 +582,20 @@
     setTimeout(() => {
       recorderDownloadBtn.textContent = originalText;
     }, 1400);
+  });
+  recorderClearBtn.addEventListener("click", async () => {
+    if (!lastRecordingResult || recording)
+      return;
+    recorderClearBtn.disabled = true;
+    recorderError = "";
+    try {
+      await sendRuntimeMessage({ type: "tabworks-ui-recording-clear" });
+    } catch {
+      await new Promise((resolve) => chrome.storage.local.remove("lastUiRecording", resolve));
+    }
+    lastRecordingResult = null;
+    recorderError = "";
+    renderRecording();
   });
   async function checkViewerStatus() {
     if (isPreviewRuntime) {

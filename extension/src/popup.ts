@@ -25,6 +25,9 @@ if (needsChromeMock) {
       local: {
         get: (_keys, callback) => callback?.({}),
         set() {},
+        remove(_keys, callback) {
+          callback?.();
+        },
       },
     },
     tabs: {
@@ -55,6 +58,7 @@ const recorderStopBtn = document.getElementById("recorder-stop");
 const recorderSecondary = document.getElementById("recorder-secondary");
 const recorderReplayBtn = document.getElementById("recorder-replay");
 const recorderDownloadBtn = document.getElementById("recorder-download");
+const recorderClearBtn = document.getElementById("recorder-clear");
 
 const APP_URL = "http://localhost:9527";
 const STATUS_URL = `${APP_URL}/status`;
@@ -157,8 +161,8 @@ function renderSessions(sessions = []) {
   sessionsEl.textContent = `${sessions.length} 个窗口 / ${tabCount} 个标签页`;
 }
 
-function openGuide(hash = "interfaces") {
-  chrome.tabs.create({ url: chrome.runtime.getURL(`guide.html#${hash}`) });
+function openGuide() {
+  chrome.tabs.create({ url: chrome.runtime.getURL("guide.html") });
 }
 
 function shortSessionId(sessionId = "") {
@@ -180,6 +184,8 @@ function renderRecording() {
   recorderStopBtn.hidden = !isRecording;
   recorderStartBtn.disabled = isRecording;
   recorderStopBtn.disabled = !isRecording;
+  recorderClearBtn.hidden = isRecording || !hasSavedRecording;
+  recorderClearBtn.disabled = isRecording || !hasSavedRecording;
   recorderStartBtn.textContent = recording
     ? "录制中"
     : lastRecordingResult
@@ -299,7 +305,7 @@ logsBtn.addEventListener("click", () => {
   chrome.tabs.create({ url: APP_URL });
 });
 
-guideBtn.addEventListener("click", () => openGuide("interfaces"));
+guideBtn.addEventListener("click", () => openGuide());
 
 recorderStartBtn.addEventListener("click", async () => {
   recorderStartBtn.disabled = true;
@@ -469,12 +475,31 @@ function isDuplicateDragEvent(previous, next) {
   return sameSortableMove(previous, next) || sameDragGeometry(previous, next);
 }
 
+function isDuplicateClickEvent(previous, next) {
+  if (previous?.kind !== "click" || next?.kind !== "click") return false;
+  const previousAt = eventTime(previous);
+  const nextAt = eventTime(next);
+  if (
+    previousAt !== null &&
+    nextAt !== null &&
+    Math.abs(nextAt - previousAt) > 350
+  ) {
+    return false;
+  }
+  return closeNumber(previous?.x, next?.x, 12) && closeNumber(previous?.y, next?.y, 12);
+}
+
 function dedupeDragEvents(events = []) {
   const normalized = [];
   for (const event of events) {
     if (
-      event?.kind === "drag" &&
-      normalized.slice(-8).some((previous) => isDuplicateDragEvent(previous, event))
+      normalized
+        .slice(-8)
+        .some(
+          (previous) =>
+            isDuplicateDragEvent(previous, event) ||
+            isDuplicateClickEvent(previous, event),
+        )
     ) {
       continue;
     }
@@ -725,6 +750,22 @@ recorderDownloadBtn.addEventListener("click", () => {
   setTimeout(() => {
     recorderDownloadBtn.textContent = originalText;
   }, 1400);
+});
+
+recorderClearBtn.addEventListener("click", async () => {
+  if (!lastRecordingResult || recording) return;
+  recorderClearBtn.disabled = true;
+  recorderError = "";
+  try {
+    await sendRuntimeMessage({ type: "tabworks-ui-recording-clear" });
+  } catch {
+    await new Promise((resolve) =>
+      chrome.storage.local.remove("lastUiRecording", resolve),
+    );
+  }
+  lastRecordingResult = null;
+  recorderError = "";
+  renderRecording();
 });
 
 async function checkViewerStatus() {

@@ -404,8 +404,8 @@ code,
 .api-row {
     display: grid;
     grid-template-columns:
-        154px 76px minmax(124px, 0.74fr) minmax(0, 1.32fr)
-        118px auto;
+        154px 76px minmax(124px, 0.7fr) minmax(0, 1.45fr)
+        auto;
     gap: 12px;
     align-items: center;
     min-height: 54px;
@@ -478,20 +478,6 @@ code,
     color: #344054;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.tag {
-    min-height: 28px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 9px;
-    border-radius: 8px;
-    color: #344054;
-    background: var(--panel-soft);
-    box-shadow: var(--control-shadow);
-    font-size: 12px;
     white-space: nowrap;
 }
 
