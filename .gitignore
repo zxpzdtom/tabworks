@@ -6,3 +6,12 @@ node_modules/
 .bridge/
 extension.crx
 extension.pem
+extension/dist/
+extension/background.js
+extension/guide.css
+extension/guide.js
+extension/popup.css
+extension/popup.js
+extension/recorder-content.js
+extension/recorder-main.js
+viewer/dist/

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TabWorks Bridge",
-  "version": "1.0.0",
-  "description": "Connect local automation tools to your signed-in Chrome session through a private localhost bridge.",
+  "version": "1.0.2",
+  "description": "通过 CDP 连接本地服务，录制、回放并下载浏览器自动化脚本。",
   "permissions": [
     "debugger",
     "tabs",

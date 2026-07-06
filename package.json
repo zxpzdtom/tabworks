@@ -29,6 +29,7 @@
     "scripts/setup.sh"
   ],
   "scripts": {
+    "build": "bun run viewer:build && bun run extension:build",
     "serve": "bun cli/main.ts serve",
     "dev": "bun cli/main.ts serve",
     "daemon:start": "bun cli/main.ts daemon start",
@@ -37,9 +38,10 @@
     "list": "bun cli/main.ts list",
     "bridge:status": "bun cli/main.ts bridge status",
     "bridge:stop": "bun cli/main.ts bridge stop",
-    "extension:build": "bun build extension/src/background.ts --target=browser --format=esm --outfile=extension/background.js && bun build extension/src/popup.ts --target=browser --format=iife --outfile=extension/popup.js && bun build extension/src/guide.ts --target=browser --format=iife --outfile=extension/guide.js && bun build extension/src/recorder-content.ts --target=browser --format=iife --outfile=extension/recorder-content.js && bun build extension/src/recorder-main.ts --target=browser --format=iife --outfile=extension/recorder-main.js && bunx @tailwindcss/cli -i extension/src/popup.css -o extension/popup.css --minify && bunx @tailwindcss/cli -i extension/src/guide.css -o extension/guide.css --minify",
+    "viewer:build": "cd viewer && bun run build",
+    "extension:build": "rm -rf extension/dist && mkdir -p extension/dist && cp extension/manifest.json extension/popup.html extension/guide.html extension/dist/ && cp -R extension/icons extension/images extension/dist/ && bun build extension/src/background.ts --target=browser --format=esm --outfile=extension/dist/background.js && bun build extension/src/popup.ts --target=browser --format=iife --outfile=extension/dist/popup.js && bun build extension/src/guide.ts --target=browser --format=iife --outfile=extension/dist/guide.js && bun build extension/src/recorder-content.ts --target=browser --format=iife --outfile=extension/dist/recorder-content.js && bun build extension/src/recorder-main.ts --target=browser --format=iife --outfile=extension/dist/recorder-main.js && bunx @tailwindcss/cli -i extension/src/popup.css -o extension/dist/popup.css --minify && bunx @tailwindcss/cli -i extension/src/guide.css -o extension/dist/guide.css --minify",
     "extension:check": "bunx tsc -p extension/tsconfig.json --noEmit",
-    "test": "cd bridge && bun test --ignore-pattern '**/*.integration.test.ts' sites"
+    "test": "cd bridge && bun test lib"
   },
   "dependencies": {
     "cli-table3": "^0.6.5",
