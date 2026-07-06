@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabWorks Bridge",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "通过 CDP 连接本地服务，录制、回放并下载浏览器自动化脚本。",
   "permissions": [
     "debugger",

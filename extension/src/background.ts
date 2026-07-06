@@ -122,6 +122,9 @@ function connect() {
   ws.onclose = () => {
     console.log("[tabworks] 已断开 bridge 连接");
     ws = null;
+    cdpDetachAll().catch((err) =>
+      console.warn("[tabworks] 释放 debugger 失败:", err),
+    );
     scheduleReconnect();
     updateBadge();
     broadcastStatus();
@@ -307,24 +310,25 @@ async function ensureAttached(tabId) {
 }
 
 async function cdpEvaluate(tabId, expression) {
-  await ensureAttached(tabId);
-  const result = await chrome.debugger.sendCommand(
-    { tabId },
-    "Runtime.evaluate",
-    {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    },
-  );
-  if (result.exceptionDetails) {
-    const errMsg =
-      result.exceptionDetails.exception?.description ||
-      result.exceptionDetails.text ||
-      "Eval 错误";
-    throw new Error(errMsg);
-  }
-  return result.result?.value;
+  return withCdpAttachment(tabId, async () => {
+    const result = await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    );
+    if (result.exceptionDetails) {
+      const errMsg =
+        result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        "Eval 错误";
+      throw new Error(errMsg);
+    }
+    return result.result?.value;
+  });
 }
 
 function sleep(ms) {
@@ -332,122 +336,132 @@ function sleep(ms) {
 }
 
 async function cdpMouseClick(tabId, x, y) {
-  await ensureAttached(tabId);
-  const point = { x: Number(x), y: Number(y) };
-  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-    throw new Error("鼠标坐标无效");
-  }
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mouseMoved",
-    x: point.x,
-    y: point.y,
-    button: "none",
-    buttons: 0,
-    pointerType: "mouse",
+  return withCdpAttachment(tabId, async () => {
+    const point = { x: Number(x), y: Number(y) };
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw new Error("鼠标坐标无效");
+    }
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+      button: "none",
+      buttons: 0,
+      pointerType: "mouse",
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: point.x,
+      y: point.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+      pointerType: "mouse",
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: point.x,
+      y: point.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+      pointerType: "mouse",
+    });
+    return { clicked: true, ...point };
   });
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: point.x,
-    y: point.y,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-    pointerType: "mouse",
-  });
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: point.x,
-    y: point.y,
-    button: "left",
-    buttons: 0,
-    clickCount: 1,
-    pointerType: "mouse",
-  });
-  return { clicked: true, ...point };
 }
 
 async function cdpMousePress(tabId, x, y, durationMs = 700) {
-  await ensureAttached(tabId);
-  const point = { x: Number(x), y: Number(y) };
-  const holdMs = Math.max(100, Math.min(Number(durationMs) || 700, 5000));
-  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-    throw new Error("鼠标坐标无效");
-  }
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mouseMoved",
-    x: point.x,
-    y: point.y,
-    button: "none",
+  return withCdpAttachment(tabId, async () => {
+    const point = { x: Number(x), y: Number(y) };
+    const holdMs = Math.max(100, Math.min(Number(durationMs) || 700, 5000));
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw new Error("鼠标坐标无效");
+    }
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+      button: "none",
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: point.x,
+      y: point.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await sleep(holdMs);
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: point.x,
+      y: point.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    return { pressed: true, durationMs: holdMs, ...point };
   });
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: point.x,
-    y: point.y,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-  });
-  await sleep(holdMs);
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: point.x,
-    y: point.y,
-    button: "left",
-    buttons: 0,
-    clickCount: 1,
-  });
-  return { pressed: true, durationMs: holdMs, ...point };
 }
 
 async function cdpMouseDrag(tabId, fromX, fromY, toX, toY, durationMs = 450) {
-  await ensureAttached(tabId);
-  const start = { x: Number(fromX), y: Number(fromY) };
-  const end = { x: Number(toX), y: Number(toY) };
-  const dragMs = Math.max(80, Math.min(Number(durationMs) || 450, 8000));
-  if (
-    !Number.isFinite(start.x) ||
-    !Number.isFinite(start.y) ||
-    !Number.isFinite(end.x) ||
-    !Number.isFinite(end.y)
-  ) {
-    throw new Error("拖拽坐标无效");
-  }
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mouseMoved",
-    x: start.x,
-    y: start.y,
-    button: "none",
-  });
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: start.x,
-    y: start.y,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-  });
-
-  const steps = Math.max(4, Math.min(40, Math.round(dragMs / 24)));
-  for (let i = 1; i <= steps; i += 1) {
-    await sleep(dragMs / steps);
+  return withCdpAttachment(tabId, async () => {
+    const start = { x: Number(fromX), y: Number(fromY) };
+    const end = { x: Number(toX), y: Number(toY) };
+    const dragMs = Math.max(80, Math.min(Number(durationMs) || 450, 8000));
+    if (
+      !Number.isFinite(start.x) ||
+      !Number.isFinite(start.y) ||
+      !Number.isFinite(end.x) ||
+      !Number.isFinite(end.y)
+    ) {
+      throw new Error("拖拽坐标无效");
+    }
     await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
-      x: start.x + ((end.x - start.x) * i) / steps,
-      y: start.y + ((end.y - start.y) * i) / steps,
+      x: start.x,
+      y: start.y,
+      button: "none",
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: start.x,
+      y: start.y,
       button: "left",
       buttons: 1,
+      clickCount: 1,
     });
-  }
 
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: end.x,
-    y: end.y,
-    button: "left",
-    buttons: 0,
-    clickCount: 1,
+    const steps = Math.max(4, Math.min(40, Math.round(dragMs / 24)));
+    for (let i = 1; i <= steps; i += 1) {
+      await sleep(dragMs / steps);
+      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: start.x + ((end.x - start.x) * i) / steps,
+        y: start.y + ((end.y - start.y) * i) / steps,
+        button: "left",
+        buttons: 1,
+      });
+    }
+
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: end.x,
+      y: end.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    return {
+      dragged: true,
+      fromX: start.x,
+      fromY: start.y,
+      toX: end.x,
+      toY: end.y,
+      durationMs: dragMs,
+    };
   });
-  return { dragged: true, fromX: start.x, fromY: start.y, toX: end.x, toY: end.y, durationMs: dragMs };
 }
 
 const KEY_DEFINITIONS = {
@@ -464,34 +478,35 @@ const KEY_DEFINITIONS = {
 };
 
 async function cdpKeyPress(tabId, key) {
-  await ensureAttached(tabId);
-  const definition =
-    KEY_DEFINITIONS[key] ||
-    (String(key || "").length === 1
-      ? {
-          key: String(key),
-          code: `Key${String(key).toUpperCase()}`,
-          text: String(key),
-          windowsVirtualKeyCode: String(key).toUpperCase().charCodeAt(0),
-        }
-      : null);
-  if (!definition) throw new Error(`不支持的按键: ${key}`);
-  const base = {
-    key: definition.key,
-    code: definition.code,
-    windowsVirtualKeyCode: definition.windowsVirtualKeyCode,
-    nativeVirtualKeyCode: definition.windowsVirtualKeyCode,
-  };
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
-    type: "keyDown",
-    ...base,
-    text: definition.text,
+  return withCdpAttachment(tabId, async () => {
+    const definition =
+      KEY_DEFINITIONS[key] ||
+      (String(key || "").length === 1
+        ? {
+            key: String(key),
+            code: `Key${String(key).toUpperCase()}`,
+            text: String(key),
+            windowsVirtualKeyCode: String(key).toUpperCase().charCodeAt(0),
+          }
+        : null);
+    if (!definition) throw new Error(`不支持的按键: ${key}`);
+    const base = {
+      key: definition.key,
+      code: definition.code,
+      windowsVirtualKeyCode: definition.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: definition.windowsVirtualKeyCode,
+    };
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...base,
+      text: definition.text,
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      ...base,
+    });
+    return { pressed: true, key };
   });
-  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
-    type: "keyUp",
-    ...base,
-  });
-  return { pressed: true, key };
 }
 
 async function cdpDetach(tabId) {
@@ -504,48 +519,62 @@ async function cdpDetach(tabId) {
   }
 }
 
-async function cdpScreenshot(tabId, options = {}) {
+async function cdpDetachAll() {
+  await Promise.all([...attachedTabs].map((tabId) => cdpDetach(tabId)));
+}
+
+async function withCdpAttachment(tabId, operation) {
   await ensureAttached(tabId);
-  const format = options.format ?? "png";
-
-  if (options.fullPage) {
-    const metrics = await chrome.debugger.sendCommand(
-      { tabId },
-      "Page.getLayoutMetrics",
-    );
-    const size = metrics.cssContentSize || metrics.contentSize;
-    if (size) {
-      await chrome.debugger.sendCommand(
-        { tabId },
-        "Emulation.setDeviceMetricsOverride",
-        {
-          mobile: false,
-          width: Math.ceil(size.width),
-          height: Math.ceil(size.height),
-          deviceScaleFactor: 1,
-        },
-      );
-    }
-  }
-
   try {
-    const params = { format };
-    if (format === "jpeg" && options.quality !== undefined) {
-      params.quality = Math.max(0, Math.min(100, options.quality));
-    }
-    const result = await chrome.debugger.sendCommand(
-      { tabId },
-      "Page.captureScreenshot",
-      params,
-    );
-    return result.data;
+    return await operation();
   } finally {
-    if (options.fullPage) {
-      await chrome.debugger
-        .sendCommand({ tabId }, "Emulation.clearDeviceMetricsOverride")
-        .catch(() => {});
-    }
+    await cdpDetach(tabId);
   }
+}
+
+async function cdpScreenshot(tabId, options = {}) {
+  return withCdpAttachment(tabId, async () => {
+    const format = options.format ?? "png";
+
+    if (options.fullPage) {
+      const metrics = await chrome.debugger.sendCommand(
+        { tabId },
+        "Page.getLayoutMetrics",
+      );
+      const size = metrics.cssContentSize || metrics.contentSize;
+      if (size) {
+        await chrome.debugger.sendCommand(
+          { tabId },
+          "Emulation.setDeviceMetricsOverride",
+          {
+            mobile: false,
+            width: Math.ceil(size.width),
+            height: Math.ceil(size.height),
+            deviceScaleFactor: 1,
+          },
+        );
+      }
+    }
+
+    try {
+      const params = { format };
+      if (format === "jpeg" && options.quality !== undefined) {
+        params.quality = Math.max(0, Math.min(100, options.quality));
+      }
+      const result = await chrome.debugger.sendCommand(
+        { tabId },
+        "Page.captureScreenshot",
+        params,
+      );
+      return result.data;
+    } finally {
+      if (options.fullPage) {
+        await chrome.debugger
+          .sendCommand({ tabId }, "Emulation.clearDeviceMetricsOverride")
+          .catch(() => {});
+      }
+    }
+  });
 }
 
 function registerCdpListeners() {
