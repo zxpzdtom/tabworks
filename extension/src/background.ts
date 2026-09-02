@@ -20,11 +20,20 @@
 
 // ─── 常量 ────────────────────────────────────────────────────────────
 
+const TEST_CONFIG = globalThis.__TABWORKS_TEST_CONFIG__ || {};
 const BRIDGE_WS_URL = "ws://127.0.0.1:9527/ext";
-const WS_RECONNECT_BASE_DELAY = 2000;
-const WS_RECONNECT_MAX_DELAY = 60000;
-const WINDOW_IDLE_TIMEOUT = 30000; // 30s 无命令后自动关闭自动化窗口
+const WS_RECONNECT_BASE_DELAY = TEST_CONFIG.reconnectBaseDelay ?? 2000;
+const WS_RECONNECT_MAX_DELAY = TEST_CONFIG.reconnectMaxDelay ?? 60000;
+const WS_HEARTBEAT_INTERVAL = TEST_CONFIG.heartbeatInterval ?? 20000;
+const WINDOW_IDLE_TIMEOUT = TEST_CONFIG.windowIdleTimeout ?? 30000; // 30s 无命令后自动关闭自动化窗口
+const DEFAULT_COMMAND_TIMEOUT = TEST_CONFIG.commandTimeout ?? 30000;
+const DEFAULT_NAVIGATION_TIMEOUT = TEST_CONFIG.navigationTimeout ?? 25000;
+const DEBUGGER_OPERATION_TIMEOUT = TEST_CONFIG.debuggerTimeout ?? 10000;
+const TAB_OPERATION_TIMEOUT = TEST_CONFIG.tabTimeout ?? 10000;
+const MAX_COMMAND_TIMEOUT = 120000;
 const BLANK_PAGE = "data:text/html,<html></html>";
+const KEEPALIVE_ALARM = "keepalive";
+const AUTOMATION_SESSIONS_KEY = "automationSessions";
 
 // ─── 日志环形缓冲 ─────────────────────────────────────────────────────
 // 保留最近 200 条，供转发到 bridge 的日志服务（viewer）使用。
@@ -85,41 +94,71 @@ function connect() {
   )
     return;
 
+  let socket;
   try {
-    ws = new WebSocket(BRIDGE_WS_URL);
+    socket = new WebSocket(BRIDGE_WS_URL);
+    ws = socket;
   } catch {
     scheduleReconnect();
     return;
   }
 
-  ws.onopen = () => {
+  let heartbeatTimer = null;
+
+  const clearHeartbeat = () => {
+    if (!heartbeatTimer) return;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  };
+
+  socket.onopen = () => {
+    if (ws !== socket) {
+      socket.close();
+      return;
+    }
     console.log(`[tabworks] 已连接到 bridge: ${BRIDGE_WS_URL}`);
     reconnectAttempts = 0;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    ws?.send(
+    socket.send(
       JSON.stringify({
         type: "hello",
         version: chrome.runtime.getManifest().version,
       }),
     );
+    heartbeatTimer = setInterval(() => {
+      if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+      try {
+        socket.send(
+          JSON.stringify({ type: "heartbeat", timestamp: Date.now() }),
+        );
+      } catch {
+        /* onclose/onerror 会负责重连 */
+      }
+    }, WS_HEARTBEAT_INTERVAL);
     updateBadge();
     broadcastStatus();
   };
 
-  ws.onmessage = async (event) => {
+  socket.onmessage = async (event) => {
+    if (ws !== socket) return;
     try {
       const command = JSON.parse(event.data);
-      const result = await handleCommand(command);
-      ws?.send(JSON.stringify(result));
+      const result = await handleCommand(command, socket);
+      // 命令属于接收它的 socket。连接换代后绝不能把旧结果发给新 socket。
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(result));
+      }
     } catch (err) {
       console.error("[tabworks] 消息处理异常:", err);
     }
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    clearHeartbeat();
+    if (ws !== socket) return;
     console.log("[tabworks] 已断开 bridge 连接");
     ws = null;
     cdpDetachAll().catch((err) =>
@@ -130,8 +169,8 @@ function connect() {
     broadcastStatus();
   };
 
-  ws.onerror = () => {
-    ws?.close();
+  socket.onerror = () => {
+    socket.close();
   };
 }
 
@@ -157,9 +196,68 @@ function updateBadge() {
   if (connected) chrome.action.setBadgeBackgroundColor({ color: "#34c759" });
 }
 
+// ─── 有界异步操作 ────────────────────────────────────────────────────
+
+function clampTimeout(value, fallback, maximum = MAX_COMMAND_TIMEOUT) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return Math.max(1, Math.min(Math.floor(numeric), maximum));
+}
+
+function commandError(code, context, cause, startedAt = Date.now()) {
+  const elapsedMs = Math.max(0, Date.now() - startedAt);
+  const action = context?.action || "unknown";
+  const phase = context?.phase || "unknown";
+  const tabId = Number.isInteger(context?.tabId) ? context.tabId : "unknown";
+  const detail = cause instanceof Error ? cause.message : String(cause || code);
+  const error = new Error(
+    `${code} action=${action} phase=${phase} tabId=${tabId} elapsedMs=${elapsedMs}: ${detail}`,
+  );
+  error.code = code;
+  error.action = action;
+  error.phase = phase;
+  error.tabId = Number.isInteger(context?.tabId) ? context.tabId : null;
+  error.elapsedMs = elapsedMs;
+  error.cause = cause;
+  return error;
+}
+
+async function withTimeout(operation, timeoutMs, context) {
+  const startedAt = Date.now();
+  const boundedTimeout = clampTimeout(timeoutMs, DEFAULT_COMMAND_TIMEOUT);
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              commandError(
+                "COMMAND_TIMEOUT",
+                context,
+                `超过 ${boundedTimeout}ms`,
+                startedAt,
+              ),
+            ),
+          boundedTimeout,
+        );
+      }),
+    ]);
+  } catch (err) {
+    if (err?.code) throw err;
+    throw commandError("COMMAND_FAILED", context, err, startedAt);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ─── 自动化窗口隔离 ──────────────────────────────────────────────────
 
 const automationSessions = new Map();
+const activeCommandsByWorkspace = new Map();
+const automationWindowPromises = new Map();
+const workspaceTabQueues = new Map();
 const recordingTabs = new Map(); // Map<tabId, { sessionId, startedAt, events }>
 const LAST_UI_RECORDING_KEY = "lastUiRecording";
 
@@ -167,16 +265,47 @@ function getWorkspaceKey(workspace) {
   return workspace?.trim() || "default";
 }
 
-function resetWindowIdleTimer(workspace) {
+function persistAutomationSessions() {
+  const value = [...automationSessions.entries()].map(
+    ([workspace, session]) => ({
+      workspace,
+      windowId: session.windowId,
+      idleDeadlineAt: session.idleDeadlineAt,
+    }),
+  );
+  return chrome.storage.session
+    .set({ [AUTOMATION_SESSIONS_KEY]: value })
+    .catch((err) =>
+      console.warn("[tabworks] 保存自动化 session 失败:", err),
+    );
+}
+
+function clearWindowIdleTimer(session) {
+  if (session?.idleTimer) clearTimeout(session.idleTimer);
+  if (session) session.idleTimer = null;
+}
+
+function resetWindowIdleTimer(workspace, delayMs = WINDOW_IDLE_TIMEOUT) {
   const session = automationSessions.get(workspace);
   if (!session) return;
-  if (session.idleTimer) clearTimeout(session.idleTimer);
-  session.idleDeadlineAt = Date.now() + WINDOW_IDLE_TIMEOUT;
+  clearWindowIdleTimer(session);
+  if (session.activeCommandCount > 0) {
+    session.idleDeadlineAt = null;
+    void persistAutomationSessions();
+    broadcastSessions();
+    return;
+  }
+  const boundedDelay = Math.max(0, delayMs);
+  session.idleDeadlineAt = Date.now() + boundedDelay;
   session.idleTimer = setTimeout(async () => {
     const current = automationSessions.get(workspace);
-    if (!current) return;
+    if (!current || current.activeCommandCount > 0) return;
     try {
-      await chrome.windows.remove(current.windowId);
+      await withTimeout(
+        () => chrome.windows.remove(current.windowId),
+        TAB_OPERATION_TIMEOUT,
+        { action: "idle-close", phase: "windows.remove" },
+      );
       console.log(
         `[tabworks] 自动化窗口 ${current.windowId} (${workspace}) 已关闭（空闲超时）`,
       );
@@ -184,44 +313,138 @@ function resetWindowIdleTimer(workspace) {
       /* 已关闭 */
     }
     automationSessions.delete(workspace);
+    await persistAutomationSessions();
     broadcastSessions();
-  }, WINDOW_IDLE_TIMEOUT);
+  }, boundedDelay);
+  void persistAutomationSessions();
   broadcastSessions();
 }
 
-async function getAutomationWindow(workspace, { focused = false } = {}) {
+function beginWorkspaceCommand(workspace) {
+  const count = (activeCommandsByWorkspace.get(workspace) || 0) + 1;
+  activeCommandsByWorkspace.set(workspace, count);
+  const session = automationSessions.get(workspace);
+  if (session) {
+    session.activeCommandCount = count;
+    session.idleDeadlineAt = null;
+    clearWindowIdleTimer(session);
+    void persistAutomationSessions();
+  }
+}
+
+function endWorkspaceCommand(workspace) {
+  const count = Math.max(
+    0,
+    (activeCommandsByWorkspace.get(workspace) || 1) - 1,
+  );
+  if (count === 0) activeCommandsByWorkspace.delete(workspace);
+  else activeCommandsByWorkspace.set(workspace, count);
+  const session = automationSessions.get(workspace);
+  if (!session) return;
+  session.activeCommandCount = count;
+  if (count === 0) resetWindowIdleTimer(workspace);
+}
+
+async function getAutomationWindow(
+  workspace,
+  { focused = false, initialUrl = BLANK_PAGE } = {},
+) {
   const existing = automationSessions.get(workspace);
   if (existing) {
     try {
-      await chrome.windows.get(existing.windowId);
+      await withTimeout(
+        () => chrome.windows.get(existing.windowId),
+        TAB_OPERATION_TIMEOUT,
+        { action: "window", phase: "windows.get" },
+      );
       if (focused)
-        await chrome.windows.update(existing.windowId, { focused: true });
+        await withTimeout(
+          () => chrome.windows.update(existing.windowId, { focused: true }),
+          TAB_OPERATION_TIMEOUT,
+          { action: "window", phase: "windows.update" },
+        );
       return existing.windowId;
     } catch {
       automationSessions.delete(workspace);
+      await persistAutomationSessions();
     }
   }
 
-  const win = await chrome.windows.create({
-    url: BLANK_PAGE,
-    focused,
-    width: 1280,
-    height: 900,
-    type: "normal",
-    state: "normal",
+  const pendingWindow = automationWindowPromises.get(workspace);
+  if (pendingWindow) {
+    const windowId = await pendingWindow;
+    if (focused) {
+      await withTimeout(
+        () => chrome.windows.update(windowId, { focused: true }),
+        TAB_OPERATION_TIMEOUT,
+        { action: "window", phase: "windows.update:coalesced" },
+      );
+    }
+    return windowId;
+  }
+
+  const createWindow = (async () => {
+    const win = await withTimeout(
+      () =>
+        chrome.windows.create({
+          url: initialUrl,
+          focused,
+          width: 1280,
+          height: 900,
+          type: "normal",
+          state: "normal",
+        }),
+      TAB_OPERATION_TIMEOUT,
+      { action: "window", phase: "windows.create" },
+    );
+    let bootstrapTabId = win.tabs?.[0]?.id ?? null;
+    if (!Number.isInteger(bootstrapTabId)) {
+      try {
+        const createdTabs = await withTimeout(
+          () => chrome.tabs.query({ windowId: win.id }),
+          TAB_OPERATION_TIMEOUT,
+          { action: "window", phase: "tabs.query:bootstrap" },
+        );
+        bootstrapTabId = createdTabs[0]?.id ?? null;
+      } catch {
+        /* Window.tabs 在正常权限下会直接提供首 tab；查询仅为兼容兜底。 */
+      }
+    }
+    const session = {
+      windowId: win.id,
+      bootstrapTabId,
+      idleTimer: null,
+      idleDeadlineAt: null,
+      activeCommandCount: activeCommandsByWorkspace.get(workspace) || 0,
+    };
+    automationSessions.set(workspace, session);
+    await persistAutomationSessions();
+    console.log(
+      `[tabworks] 创建自动化窗口 ${session.windowId} (${workspace}, focused=${focused})`,
+    );
+    if (session.activeCommandCount === 0) resetWindowIdleTimer(workspace);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return session.windowId;
+  })();
+  automationWindowPromises.set(workspace, createWindow);
+  try {
+    return await createWindow;
+  } finally {
+    if (automationWindowPromises.get(workspace) === createWindow) {
+      automationWindowPromises.delete(workspace);
+    }
+  }
+}
+
+function withWorkspaceTabQueue(workspace, operation) {
+  const previous = workspaceTabQueues.get(workspace) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  workspaceTabQueues.set(workspace, current);
+  return current.finally(() => {
+    if (workspaceTabQueues.get(workspace) === current) {
+      workspaceTabQueues.delete(workspace);
+    }
   });
-  const session = {
-    windowId: win.id,
-    idleTimer: null,
-    idleDeadlineAt: Date.now() + WINDOW_IDLE_TIMEOUT,
-  };
-  automationSessions.set(workspace, session);
-  console.log(
-    `[tabworks] 创建自动化窗口 ${session.windowId} (${workspace}, focused=${focused})`,
-  );
-  resetWindowIdleTimer(workspace);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return session.windowId;
 }
 
 chrome.windows.onRemoved.addListener((windowId) => {
@@ -230,6 +453,7 @@ chrome.windows.onRemoved.addListener((windowId) => {
       console.log(`[tabworks] 自动化窗口已关闭 (${workspace})`);
       if (session.idleTimer) clearTimeout(session.idleTimer);
       automationSessions.delete(workspace);
+      void persistAutomationSessions();
       broadcastSessions();
     }
   }
@@ -242,6 +466,73 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // ─── CDP 工具函数 ────────────────────────────────────────────────────
 
 const attachedTabs = new Set();
+const tabCommandQueues = new Map();
+const tabOperationQueues = new Map();
+
+function withTabQueue(tabId, operation) {
+  const previous = tabCommandQueues.get(tabId) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  tabCommandQueues.set(tabId, current);
+  return current.finally(() => {
+    if (tabCommandQueues.get(tabId) === current) tabCommandQueues.delete(tabId);
+  });
+}
+
+function withTabOperationQueue(tabId, operation, context = {}) {
+  const previous = tabOperationQueues.get(tabId) || Promise.resolve();
+  const current = previous.catch(() => {}).then(async () => {
+    if (context.deadlineAt && Date.now() >= context.deadlineAt) {
+      throw commandError(
+        "COMMAND_TIMEOUT",
+        {
+          action: context.action,
+          phase: "tab-queue",
+          tabId,
+        },
+        "命令在排队期间已超时，已取消且不会迟到执行",
+        context.startedAt,
+      );
+    }
+    return operation();
+  });
+  tabOperationQueues.set(tabId, current);
+  return current.finally(() => {
+    if (tabOperationQueues.get(tabId) === current) {
+      tabOperationQueues.delete(tabId);
+    }
+  });
+}
+
+function tabOperationContext(cmd) {
+  return {
+    action: cmd?.action,
+    startedAt: cmd?.__startedAt,
+    deadlineAt: cmd?.__deadlineAt,
+  };
+}
+
+function runUiTabOperation(tabId, action, operation) {
+  const startedAt = Date.now();
+  const deadlineAt = startedAt + DEFAULT_COMMAND_TIMEOUT;
+  return withTimeout(
+    () =>
+      withTabOperationQueue(tabId, operation, {
+        action,
+        startedAt,
+        deadlineAt,
+      }),
+    DEFAULT_COMMAND_TIMEOUT,
+    { action, phase: "ui-command", tabId },
+  );
+}
+
+function sendCdpCommand(tabId, method, params, action) {
+  return withTimeout(
+    () => chrome.debugger.sendCommand({ tabId }, method, params),
+    DEBUGGER_OPERATION_TIMEOUT,
+    { action, phase: `sendCommand:${method}`, tabId },
+  );
+}
 
 function isDebuggableUrl(url) {
   if (!url) return true;
@@ -256,69 +547,84 @@ function isSafeNavigationUrl(url) {
   return url.startsWith("http://") || url.startsWith("https://");
 }
 
-async function ensureAttached(tabId) {
+async function ensureAttachedUnlocked(tabId, action) {
   try {
-    const tab = await chrome.tabs.get(tabId);
+    const tab = await withTimeout(
+      () => chrome.tabs.get(tabId),
+      TAB_OPERATION_TIMEOUT,
+      { action, phase: "tabs.get", tabId },
+    );
     if (!isDebuggableUrl(tab.url)) {
       attachedTabs.delete(tabId);
       throw new Error(`无法调试 tab ${tabId}：URL 为 ${tab.url ?? "unknown"}`);
     }
   } catch (e) {
+    if (e?.code) throw e;
     if (e instanceof Error && e.message.startsWith("无法调试")) throw e;
     attachedTabs.delete(tabId);
     throw new Error(`Tab ${tabId} 不存在`);
   }
 
-  if (attachedTabs.has(tabId)) {
-    try {
-      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-        expression: "1",
-        returnByValue: true,
-      });
-      return;
-    } catch {
-      attachedTabs.delete(tabId);
-    }
+  if (attachedTabs.has(tabId)) return;
+
+  const targets = await withTimeout(
+    () => chrome.debugger.getTargets(),
+    DEBUGGER_OPERATION_TIMEOUT,
+    { action, phase: "getTargets", tabId },
+  );
+  if (
+    targets.some(
+      (target) => target.tabId === tabId && target.attached === true,
+    )
+  ) {
+    throw commandError(
+      "DEBUGGER_BUSY",
+      { action, phase: "getTargets", tabId },
+      "已有 debugger（例如 DevTools）占用；未执行 attach/detach",
+    );
   }
 
   try {
-    await chrome.debugger.attach({ tabId }, "1.3");
+    await withTimeout(
+      () => chrome.debugger.attach({ tabId }, "1.3"),
+      DEBUGGER_OPERATION_TIMEOUT,
+      { action, phase: "attach", tabId },
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("Another debugger is already attached")) {
-      try {
-        await chrome.debugger.detach({ tabId });
-      } catch {
-        /* 忽略 */
-      }
-      try {
-        await chrome.debugger.attach({ tabId }, "1.3");
-      } catch {
-        throw new Error(`attach 失败: ${msg}`);
-      }
-    } else {
-      throw new Error(`attach 失败: ${msg}`);
+    if (/another debugger is already attached/i.test(msg)) {
+      throw commandError(
+        "DEBUGGER_BUSY",
+        { action, phase: "attach", tabId },
+        "已有 debugger（例如 DevTools）占用；未执行 detach",
+      );
     }
+    throw e;
   }
   attachedTabs.add(tabId);
-
   try {
-    await chrome.debugger.sendCommand({ tabId }, "Runtime.enable");
-  } catch {
-    /* 部分页面不需要显式 enable */
+    await sendCdpCommand(tabId, "Runtime.enable", undefined, action);
+  } catch (err) {
+    try {
+      await cdpDetachUnlocked(tabId, action);
+    } catch {
+      /* 保留 Runtime.enable 的原始错误 */
+    }
+    throw err;
   }
 }
 
 async function cdpEvaluate(tabId, expression) {
-  return withCdpAttachment(tabId, async () => {
-    const result = await chrome.debugger.sendCommand(
-      { tabId },
+  return withCdpAttachment(tabId, "exec", async () => {
+    const result = await sendCdpCommand(
+      tabId,
       "Runtime.evaluate",
       {
         expression,
         returnByValue: true,
         awaitPromise: true,
       },
+      "exec",
     );
     if (result.exceptionDetails) {
       const errMsg =
@@ -336,20 +642,20 @@ function sleep(ms) {
 }
 
 async function cdpMouseClick(tabId, x, y) {
-  return withCdpAttachment(tabId, async () => {
+  return withCdpAttachment(tabId, "mouse", async () => {
     const point = { x: Number(x), y: Number(y) };
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
       throw new Error("鼠标坐标无效");
     }
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: point.x,
       y: point.y,
       button: "none",
       buttons: 0,
       pointerType: "mouse",
-    });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    }, "mouse");
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x: point.x,
       y: point.y,
@@ -357,8 +663,8 @@ async function cdpMouseClick(tabId, x, y) {
       buttons: 1,
       clickCount: 1,
       pointerType: "mouse",
-    });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    }, "mouse");
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mouseReleased",
       x: point.x,
       y: point.y,
@@ -366,47 +672,47 @@ async function cdpMouseClick(tabId, x, y) {
       buttons: 0,
       clickCount: 1,
       pointerType: "mouse",
-    });
+    }, "mouse");
     return { clicked: true, ...point };
   });
 }
 
 async function cdpMousePress(tabId, x, y, durationMs = 700) {
-  return withCdpAttachment(tabId, async () => {
+  return withCdpAttachment(tabId, "mouse", async () => {
     const point = { x: Number(x), y: Number(y) };
     const holdMs = Math.max(100, Math.min(Number(durationMs) || 700, 5000));
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
       throw new Error("鼠标坐标无效");
     }
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: point.x,
       y: point.y,
       button: "none",
-    });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    }, "mouse");
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x: point.x,
       y: point.y,
       button: "left",
       buttons: 1,
       clickCount: 1,
-    });
+    }, "mouse");
     await sleep(holdMs);
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mouseReleased",
       x: point.x,
       y: point.y,
       button: "left",
       buttons: 0,
       clickCount: 1,
-    });
+    }, "mouse");
     return { pressed: true, durationMs: holdMs, ...point };
   });
 }
 
 async function cdpMouseDrag(tabId, fromX, fromY, toX, toY, durationMs = 450) {
-  return withCdpAttachment(tabId, async () => {
+  return withCdpAttachment(tabId, "mouse", async () => {
     const start = { x: Number(fromX), y: Number(fromY) };
     const end = { x: Number(toX), y: Number(toY) };
     const dragMs = Math.max(80, Math.min(Number(durationMs) || 450, 8000));
@@ -418,41 +724,41 @@ async function cdpMouseDrag(tabId, fromX, fromY, toX, toY, durationMs = 450) {
     ) {
       throw new Error("拖拽坐标无效");
     }
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: start.x,
       y: start.y,
       button: "none",
-    });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    }, "mouse");
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x: start.x,
       y: start.y,
       button: "left",
       buttons: 1,
       clickCount: 1,
-    });
+    }, "mouse");
 
     const steps = Math.max(4, Math.min(40, Math.round(dragMs / 24)));
     for (let i = 1; i <= steps; i += 1) {
       await sleep(dragMs / steps);
-      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: start.x + ((end.x - start.x) * i) / steps,
         y: start.y + ((end.y - start.y) * i) / steps,
         button: "left",
         buttons: 1,
-      });
+      }, "mouse");
     }
 
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    await sendCdpCommand(tabId, "Input.dispatchMouseEvent", {
       type: "mouseReleased",
       x: end.x,
       y: end.y,
       button: "left",
       buttons: 0,
       clickCount: 1,
-    });
+    }, "mouse");
     return {
       dragged: true,
       fromX: start.x,
@@ -478,7 +784,7 @@ const KEY_DEFINITIONS = {
 };
 
 async function cdpKeyPress(tabId, key) {
-  return withCdpAttachment(tabId, async () => {
+  return withCdpAttachment(tabId, "key", async () => {
     const definition =
       KEY_DEFINITIONS[key] ||
       (String(key || "").length === 1
@@ -496,55 +802,74 @@ async function cdpKeyPress(tabId, key) {
       windowsVirtualKeyCode: definition.windowsVirtualKeyCode,
       nativeVirtualKeyCode: definition.windowsVirtualKeyCode,
     };
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+    await sendCdpCommand(tabId, "Input.dispatchKeyEvent", {
       type: "keyDown",
       ...base,
       text: definition.text,
-    });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+    }, "key");
+    await sendCdpCommand(tabId, "Input.dispatchKeyEvent", {
       type: "keyUp",
       ...base,
-    });
+    }, "key");
     return { pressed: true, key };
   });
 }
 
-async function cdpDetach(tabId) {
+async function cdpDetachUnlocked(tabId, action = "cleanup") {
   if (!attachedTabs.has(tabId)) return;
   attachedTabs.delete(tabId);
-  try {
-    await chrome.debugger.detach({ tabId });
-  } catch {
-    /* 忽略 */
-  }
+  await withTimeout(
+    () => chrome.debugger.detach({ tabId }),
+    DEBUGGER_OPERATION_TIMEOUT,
+    { action, phase: "detach", tabId },
+  );
+}
+
+async function cdpDetach(tabId, action = "cleanup") {
+  return withTabQueue(tabId, () => cdpDetachUnlocked(tabId, action));
 }
 
 async function cdpDetachAll() {
   await Promise.all([...attachedTabs].map((tabId) => cdpDetach(tabId)));
 }
 
-async function withCdpAttachment(tabId, operation) {
-  await ensureAttached(tabId);
-  try {
-    return await operation();
-  } finally {
-    await cdpDetach(tabId);
-  }
+async function withCdpAttachment(tabId, action, operation) {
+  return withTabQueue(tabId, async () => {
+    await ensureAttachedUnlocked(tabId, action);
+    let operationError = null;
+    try {
+      return await operation();
+    } catch (err) {
+      operationError = err;
+      throw err;
+    } finally {
+      try {
+        await cdpDetachUnlocked(tabId, action);
+      } catch (detachError) {
+        if (!operationError) throw detachError;
+        console.warn(
+          `[tabworks] debugger 清理失败（保留原始命令错误）: ${detachError instanceof Error ? detachError.message : String(detachError)}`,
+        );
+      }
+    }
+  });
 }
 
 async function cdpScreenshot(tabId, options = {}) {
-  return withCdpAttachment(tabId, async () => {
+  return withCdpAttachment(tabId, "screenshot", async () => {
     const format = options.format ?? "png";
 
     if (options.fullPage) {
-      const metrics = await chrome.debugger.sendCommand(
-        { tabId },
+      const metrics = await sendCdpCommand(
+        tabId,
         "Page.getLayoutMetrics",
+        undefined,
+        "screenshot",
       );
       const size = metrics.cssContentSize || metrics.contentSize;
       if (size) {
-        await chrome.debugger.sendCommand(
-          { tabId },
+        await sendCdpCommand(
+          tabId,
           "Emulation.setDeviceMetricsOverride",
           {
             mobile: false,
@@ -552,6 +877,7 @@ async function cdpScreenshot(tabId, options = {}) {
             height: Math.ceil(size.height),
             deviceScaleFactor: 1,
           },
+          "screenshot",
         );
       }
     }
@@ -561,16 +887,21 @@ async function cdpScreenshot(tabId, options = {}) {
       if (format === "jpeg" && options.quality !== undefined) {
         params.quality = Math.max(0, Math.min(100, options.quality));
       }
-      const result = await chrome.debugger.sendCommand(
-        { tabId },
+      const result = await sendCdpCommand(
+        tabId,
         "Page.captureScreenshot",
         params,
+        "screenshot",
       );
       return result.data;
     } finally {
       if (options.fullPage) {
-        await chrome.debugger
-          .sendCommand({ tabId }, "Emulation.clearDeviceMetricsOverride")
+        await sendCdpCommand(
+          tabId,
+          "Emulation.clearDeviceMetricsOverride",
+          undefined,
+          "screenshot",
+        )
           .catch(() => {});
       }
     }
@@ -586,7 +917,9 @@ function registerCdpListeners() {
   });
   chrome.tabs.onUpdated.addListener(async (tabId, info) => {
     if (info.url && !isDebuggableUrl(info.url)) {
-      await cdpDetach(tabId);
+      await cdpDetach(tabId).catch((err) =>
+        console.warn("[tabworks] URL 变化后释放 debugger 失败:", err),
+      );
     }
   });
 }
@@ -817,51 +1150,82 @@ function dedupeDragEvents(events = []) {
 
 async function resolveTabId(tabId, workspace) {
   if (tabId !== undefined) {
+    const startedAt = Date.now();
+    let tab;
     try {
-      const tab = await chrome.tabs.get(tabId);
-      const session = automationSessions.get(workspace);
-      if (
-        isDebuggableUrl(tab.url) &&
-        session &&
-        tab.windowId === session.windowId
-      ) {
-        return tabId;
-      }
-      if (session && tab.windowId !== session.windowId) {
-        console.warn(`[tabworks] Tab ${tabId} 不属于自动化窗口，重新解析`);
-      } else if (!isDebuggableUrl(tab.url)) {
-        console.warn(
-          `[tabworks] Tab ${tabId} URL 不可调试 (${tab.url})，重新解析`,
-        );
-      }
-    } catch {
-      console.warn(`[tabworks] Tab ${tabId} 已不存在，重新解析`);
+      tab = await withTimeout(
+        () => chrome.tabs.get(tabId),
+        TAB_OPERATION_TIMEOUT,
+        { action: "resolve-tab", phase: "tabs.get", tabId },
+      );
+    } catch (err) {
+      throw commandError(
+        err?.code === "COMMAND_TIMEOUT" ? "COMMAND_TIMEOUT" : "TAB_NOT_FOUND",
+        { action: "resolve-tab", phase: "tabs.get", tabId },
+        err,
+        startedAt,
+      );
     }
+    const session = automationSessions.get(workspace);
+    if (!session || tab.windowId !== session.windowId) {
+      throw commandError(
+        "TAB_OUTSIDE_AUTOMATION",
+        { action: "resolve-tab", phase: "validate-window", tabId },
+        `Tab ${tabId} 不属于 workspace=${workspace} 的自动化窗口`,
+        startedAt,
+      );
+    }
+    if (!isDebuggableUrl(tab.url)) {
+      throw commandError(
+        "TAB_NOT_DEBUGGABLE",
+        { action: "resolve-tab", phase: "validate-url", tabId },
+        `URL 不可调试: ${tab.url}`,
+        startedAt,
+      );
+    }
+    return tabId;
   }
 
   const windowId = await getAutomationWindow(workspace);
-  const tabs = await chrome.tabs.query({ windowId });
+  const tabs = await withTimeout(
+    () => chrome.tabs.query({ windowId }),
+    TAB_OPERATION_TIMEOUT,
+    { action: "resolve-tab", phase: "tabs.query" },
+  );
 
   const debuggableTab = tabs.find((t) => t.id && isDebuggableUrl(t.url));
   if (debuggableTab?.id) return debuggableTab.id;
 
   const reuseTab = tabs.find((t) => t.id);
   if (reuseTab?.id) {
-    await chrome.tabs.update(reuseTab.id, { url: BLANK_PAGE });
+    await withTimeout(
+      () => chrome.tabs.update(reuseTab.id, { url: BLANK_PAGE }),
+      TAB_OPERATION_TIMEOUT,
+      { action: "resolve-tab", phase: "tabs.update", tabId: reuseTab.id },
+    );
     await new Promise((resolve) => setTimeout(resolve, 300));
     try {
-      const updated = await chrome.tabs.get(reuseTab.id);
+      const updated = await withTimeout(
+        () => chrome.tabs.get(reuseTab.id),
+        TAB_OPERATION_TIMEOUT,
+        { action: "resolve-tab", phase: "tabs.get:updated", tabId: reuseTab.id },
+      );
       if (isDebuggableUrl(updated.url)) return reuseTab.id;
     } catch {
       /* 标签页在导航中关闭 */
     }
   }
 
-  const newTab = await chrome.tabs.create({
-    windowId,
-    url: BLANK_PAGE,
-    active: true,
-  });
+  const newTab = await withTimeout(
+    () =>
+      chrome.tabs.create({
+        windowId,
+        url: BLANK_PAGE,
+        active: true,
+      }),
+    TAB_OPERATION_TIMEOUT,
+    { action: "resolve-tab", phase: "tabs.create" },
+  );
   if (!newTab.id) throw new Error("创建标签页失败");
   return newTab.id;
 }
@@ -870,17 +1234,26 @@ async function listAutomationWebTabs(workspace) {
   const session = automationSessions.get(workspace);
   if (!session) return [];
   try {
-    const tabs = await chrome.tabs.query({ windowId: session.windowId });
+    const tabs = await withTimeout(
+      () => chrome.tabs.query({ windowId: session.windowId }),
+      TAB_OPERATION_TIMEOUT,
+      { action: "tabs", phase: "tabs.query" },
+    );
     return tabs.filter((t) => isDebuggableUrl(t.url));
   } catch {
     automationSessions.delete(workspace);
+    await persistAutomationSessions();
     return [];
   }
 }
 
 async function resolveRecordingTabId(tabId) {
   if (tabId !== undefined && tabId !== null) return tabId;
-  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const tabs = await withTimeout(
+    () => chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+    TAB_OPERATION_TIMEOUT,
+    { action: "recording", phase: "tabs.query" },
+  );
   const tab = tabs.find((item) => item.id && isDebuggableUrl(item.url));
   if (!tab?.id) throw new Error("未找到可录制的当前网页标签页");
   return tab.id;
@@ -985,8 +1358,16 @@ async function refreshTabBeforeReplay(tabId, url, timeoutMs = 12000) {
     timer = setTimeout(() => finish(new Error("等待页面刷新超时")), waitMs);
 
     const navigation = targetUrl
-      ? chrome.tabs.update(tabId, { url: targetUrl, active: true })
-      : chrome.tabs.reload(tabId);
+      ? withTimeout(
+          () => chrome.tabs.update(tabId, { url: targetUrl, active: true }),
+          TAB_OPERATION_TIMEOUT,
+          { action: "recording", phase: "tabs.update", tabId },
+        )
+      : withTimeout(
+          () => chrome.tabs.reload(tabId),
+          TAB_OPERATION_TIMEOUT,
+          { action: "recording", phase: "tabs.reload", tabId },
+        );
     navigation.catch((err) =>
       finish(err instanceof Error ? err : new Error(String(err))),
     );
@@ -1250,9 +1631,17 @@ function upsertRecordingFrame(item, frame) {
   }
 }
 
-async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
+async function startUiRecording(
+  tabId,
+  sessionId = createRecordingSessionId(),
+  eventSocket = null,
+) {
   const targetTabId = await resolveRecordingTabId(tabId);
-  const tab = await chrome.tabs.get(targetTabId);
+  const tab = await withTimeout(
+    () => chrome.tabs.get(targetTabId),
+    TAB_OPERATION_TIMEOUT,
+    { action: "recording", phase: "tabs.get", tabId: targetTabId },
+  );
   if (!isDebuggableUrl(tab.url)) {
     throw new Error(`无法录制当前 URL：${tab.url}`);
   }
@@ -1265,6 +1654,8 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
     title: tab.title,
     startedAt: new Date().toISOString(),
     events: [],
+    // 录制事件只能回到启动该录制的 WebSocket，不能因重连被转发到新连接。
+    eventSocket,
   };
   recordingTabs.set(targetTabId, item);
   let response;
@@ -1280,6 +1671,15 @@ async function startUiRecording(tabId, sessionId = createRecordingSessionId()) {
   return recordingStatus(item);
 }
 
+function findActiveRecordingTabId(sessionId, tabId) {
+  const matched = [...recordingTabs.entries()].find(
+    ([entryTabId, item]) =>
+      item.sessionId === sessionId ||
+      (tabId !== undefined && Number(entryTabId) === Number(tabId)),
+  );
+  return matched?.[0] ?? null;
+}
+
 async function stopUiRecording(sessionId, tabId) {
   const entries = [...recordingTabs.entries()];
   const matched = entries.find(
@@ -1290,10 +1690,28 @@ async function stopUiRecording(sessionId, tabId) {
   if (!matched) throw new Error("未找到正在录制的标签页");
 
   const [targetTabId, item] = matched;
-  const response = await sendMessageToAllFrames(targetTabId, {
-    type: "tabworks-recording-stop",
-    sessionId: item.sessionId,
-  });
+  item.stopping = true;
+  let response;
+  try {
+    response = await sendMessageToAllFrames(targetTabId, {
+      type: "tabworks-recording-stop",
+      sessionId: item.sessionId,
+    });
+  } catch (err) {
+    item.stopping = false;
+    throw err;
+  }
+  // MAIN world 的采集器使用 AbortController 注册事件；停止后立即中止，
+  // 下一次开始录制会重新动态注入并创建新的 controller。
+  await chrome.scripting
+    .executeScript({
+      target: { tabId: targetTabId, allFrames: true },
+      world: "MAIN",
+      func: () => {
+        globalThis.__tabworksRecorderMainBridgeState?.controller?.abort?.();
+      },
+    })
+    .catch(() => {});
   item.events.push({
     seq: item.events.length + 1,
     at: new Date().toISOString(),
@@ -1304,8 +1722,13 @@ async function stopUiRecording(sessionId, tabId) {
   });
   recordingTabs.delete(targetTabId);
   const events = dedupeDragEvents(orderedRecordingEvents(item.events));
+  const {
+    eventSocket: _eventSocket,
+    stopping: _stopping,
+    ...persistableItem
+  } = item;
   const saved = {
-    ...item,
+    ...persistableItem,
     events,
     url: response.primary?.url ?? item.url,
     title: response.primary?.title ?? item.title,
@@ -1437,10 +1860,32 @@ async function replayUiRecording({ sessionId, tabId, events, options } = {}) {
 
 // ─── 命令分发 ────────────────────────────────────────────────────────
 
-async function handleCommand(cmd) {
+async function handleCommand(cmd, commandSocket = null) {
   const workspace = getWorkspaceKey(cmd.workspace);
-  resetWindowIdleTimer(workspace);
-  try {
+  if (cmd?.action === "health") {
+    const version = chrome.runtime.getManifest().version;
+    const timestamp = Date.now();
+    return {
+      id: cmd.id,
+      ok: true,
+      version,
+      timestamp,
+      data: {
+        ok: true,
+        version,
+        timestamp,
+      },
+    };
+  }
+
+  beginWorkspaceCommand(workspace);
+  const requestedTimeout =
+    cmd?.action === "navigate"
+      ? clampTimeout(cmd.timeoutMs, DEFAULT_NAVIGATION_TIMEOUT) + 5000
+      : clampTimeout(cmd?.commandTimeoutMs, DEFAULT_COMMAND_TIMEOUT);
+  cmd.__startedAt = Date.now();
+  cmd.__deadlineAt = cmd.__startedAt + requestedTimeout;
+  const operation = (async () => {
     switch (cmd.action) {
       case "exec":
         return await handleExec(cmd, workspace);
@@ -1457,7 +1902,7 @@ async function handleCommand(cmd) {
       case "screenshot":
         return await handleScreenshot(cmd, workspace);
       case "recording":
-        return await handleRecording(cmd);
+        return await handleRecording(cmd, commandSocket);
       case "close-window":
         return await handleCloseWindow(cmd, workspace);
       case "sessions":
@@ -1465,6 +1910,14 @@ async function handleCommand(cmd) {
       default:
         return { id: cmd.id, ok: false, error: `未知 action: ${cmd.action}` };
     }
+  })().finally(() => endWorkspaceCommand(workspace));
+
+  try {
+    return await withTimeout(() => operation, requestedTimeout, {
+      action: cmd?.action,
+      phase: "command",
+      tabId: cmd?.tabId,
+    });
   } catch (err) {
     return {
       id: cmd.id,
@@ -1480,7 +1933,11 @@ async function handleExec(cmd, workspace) {
   if (!cmd.code) return { id: cmd.id, ok: false, error: "缺少 code 字段" };
   const tabId = await resolveTabId(cmd.tabId, workspace);
   try {
-    const data = await cdpEvaluate(tabId, cmd.code);
+    const data = await withTabOperationQueue(
+      tabId,
+      () => cdpEvaluate(tabId, cmd.code),
+      tabOperationContext(cmd),
+    );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return {
@@ -1497,19 +1954,23 @@ async function handleMouse(cmd, workspace) {
   }
   const tabId = await resolveTabId(cmd.tabId, workspace);
   try {
-    const data =
-      cmd.op === "click"
-        ? await cdpMouseClick(tabId, cmd.x, cmd.y)
-        : cmd.op === "press"
-          ? await cdpMousePress(tabId, cmd.x, cmd.y, cmd.durationMs)
-          : await cdpMouseDrag(
-              tabId,
-              cmd.fromX,
-              cmd.fromY,
-              cmd.toX,
-              cmd.toY,
-              cmd.durationMs,
-            );
+    const data = await withTabOperationQueue(
+      tabId,
+      () =>
+        cmd.op === "click"
+          ? cdpMouseClick(tabId, cmd.x, cmd.y)
+          : cmd.op === "press"
+            ? cdpMousePress(tabId, cmd.x, cmd.y, cmd.durationMs)
+            : cdpMouseDrag(
+                tabId,
+                cmd.fromX,
+                cmd.fromY,
+                cmd.toX,
+                cmd.toY,
+                cmd.durationMs,
+              ),
+      tabOperationContext(cmd),
+    );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return {
@@ -1524,7 +1985,11 @@ async function handleKey(cmd, workspace) {
   if (!cmd.key) return { id: cmd.id, ok: false, error: "缺少 key 字段" };
   const tabId = await resolveTabId(cmd.tabId, workspace);
   try {
-    const data = await cdpKeyPress(tabId, cmd.key);
+    const data = await withTabOperationQueue(
+      tabId,
+      () => cdpKeyPress(tabId, cmd.key),
+      tabOperationContext(cmd),
+    );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return {
@@ -1545,14 +2010,35 @@ async function handleNavigate(cmd, workspace) {
     };
   }
 
+  const waitUntil = cmd.waitUntil ?? "complete";
+  if (!["none", "url", "complete"].includes(waitUntil)) {
+    return {
+      id: cmd.id,
+      ok: false,
+      error: `不支持的 waitUntil: ${waitUntil}`,
+    };
+  }
+  const timeoutMs = clampTimeout(cmd.timeoutMs, DEFAULT_NAVIGATION_TIMEOUT);
   const tabId = await resolveTabId(cmd.tabId, workspace);
-  const beforeTab = await chrome.tabs.get(tabId);
+  return withTabOperationQueue(
+    tabId,
+    () => navigateTab(cmd, tabId, waitUntil, timeoutMs),
+    tabOperationContext(cmd),
+  );
+}
+
+async function navigateTab(cmd, tabId, waitUntil, timeoutMs) {
+  const beforeTab = await withTimeout(
+    () => chrome.tabs.get(tabId),
+    TAB_OPERATION_TIMEOUT,
+    { action: "navigate", phase: "tabs.get:before", tabId },
+  );
   const beforeNormalized = normalizeUrlForComparison(beforeTab.url);
   const targetUrl = cmd.url;
 
   if (
-    beforeTab.status === "complete" &&
-    isTargetUrl(beforeTab.url, targetUrl)
+    isTargetUrl(beforeTab.url, targetUrl) &&
+    (waitUntil !== "complete" || beforeTab.status === "complete")
   ) {
     return {
       id: cmd.id,
@@ -1561,28 +2047,29 @@ async function handleNavigate(cmd, workspace) {
         title: beforeTab.title,
         url: beforeTab.url,
         tabId,
+        status: beforeTab.status,
         timedOut: false,
       },
     };
   }
 
-  await cdpDetach(tabId);
-  await chrome.tabs.update(tabId, { url: targetUrl });
-
   let timedOut = false;
-  await new Promise((resolve) => {
+  let finishNavigation;
+  const navigationWait = new Promise((resolve) => {
     let settled = false;
     let checkTimer = null;
     let timeoutTimer = null;
 
-    const finish = () => {
+    const finish = (didTimeOut = false) => {
       if (settled) return;
       settled = true;
+      timedOut = didTimeOut;
       chrome.tabs.onUpdated.removeListener(listener);
       if (checkTimer) clearTimeout(checkTimer);
       if (timeoutTimer) clearTimeout(timeoutTimer);
       resolve();
     };
+    finishNavigation = finish;
 
     const isNavigationDone = (url) =>
       isTargetUrl(url, targetUrl) ||
@@ -1590,37 +2077,149 @@ async function handleNavigate(cmd, workspace) {
 
     const listener = (id, info, tab) => {
       if (id !== tabId) return;
-      if (info.status === "complete" && isNavigationDone(tab.url ?? info.url))
+      const currentUrl = tab.url ?? info.url;
+      if (waitUntil === "url" && isNavigationDone(currentUrl)) finish();
+      if (
+        waitUntil === "complete" &&
+        info.status === "complete" &&
+        isNavigationDone(currentUrl)
+      ) {
         finish();
+      }
     };
     chrome.tabs.onUpdated.addListener(listener);
 
     checkTimer = setTimeout(async () => {
       try {
-        const currentTab = await chrome.tabs.get(tabId);
+        const currentTab = await withTimeout(
+          () => chrome.tabs.get(tabId),
+          TAB_OPERATION_TIMEOUT,
+          { action: "navigate", phase: "tabs.get:check", tabId },
+        );
         if (
-          currentTab.status === "complete" &&
-          isNavigationDone(currentTab.url)
-        )
+          isNavigationDone(currentTab.url) &&
+          (waitUntil === "url" || currentTab.status === "complete")
+        ) {
           finish();
+        }
       } catch {
         /* tab 已关闭 */
       }
     }, 100);
 
     timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      console.warn(`[tabworks] 导航到 ${targetUrl} 超时（15s）`);
-      finish();
-    }, 15000);
+      console.warn(`[tabworks] 导航到 ${targetUrl} 超时（${timeoutMs}ms）`);
+      finish(true);
+    }, timeoutMs);
   });
 
-  const tab = await chrome.tabs.get(tabId);
+  try {
+    await withTabQueue(tabId, async () => {
+      await cdpDetachUnlocked(tabId, "navigate");
+      await withTimeout(
+        () => chrome.tabs.update(tabId, { url: targetUrl }),
+        TAB_OPERATION_TIMEOUT,
+        { action: "navigate", phase: "tabs.update", tabId },
+      );
+    });
+  } catch (err) {
+    finishNavigation?.();
+    throw err;
+  }
+
+  if (waitUntil === "none") finishNavigation?.();
+  await navigationWait;
+
+  const tab = await withTimeout(
+    () => chrome.tabs.get(tabId),
+    TAB_OPERATION_TIMEOUT,
+    { action: "navigate", phase: "tabs.get:after", tabId },
+  );
   return {
     id: cmd.id,
     ok: true,
-    data: { title: tab.title, url: tab.url, tabId, timedOut },
+    data: {
+      title: tab.title,
+      url: tab.url,
+      tabId,
+      status: tab.status,
+      timedOut,
+    },
   };
+}
+
+async function createAutomationTab(cmd, workspace, foreground) {
+  return withWorkspaceTabQueue(workspace, async () => {
+    if (cmd.__deadlineAt && Date.now() >= cmd.__deadlineAt) {
+      throw commandError(
+        "COMMAND_TIMEOUT",
+        { action: "tabs", phase: "workspace-tab-queue" },
+        "open 在排队期间已超时，已取消且不会迟到创建 tab",
+        cmd.__startedAt,
+      );
+    }
+
+    const targetUrl = cmd.url ?? BLANK_PAGE;
+    const windowId = await getAutomationWindow(workspace, {
+      focused: foreground,
+      initialUrl: targetUrl,
+    });
+    const session = automationSessions.get(workspace);
+    let bootstrapTabId = session?.bootstrapTabId;
+
+    if (!Number.isInteger(bootstrapTabId)) {
+      const existingTabs = await withTimeout(
+        () => chrome.tabs.query({ windowId }),
+        TAB_OPERATION_TIMEOUT,
+        { action: "tabs", phase: "tabs.query:bootstrap" },
+      );
+      bootstrapTabId = existingTabs.find(
+        (tab) => tab.id && tab.url === BLANK_PAGE,
+      )?.id;
+    }
+
+    if (Number.isInteger(bootstrapTabId)) {
+      // 在 workspace 队列内先领取，避免并发 open 复用同一个首 tab。
+      if (session) session.bootstrapTabId = null;
+      try {
+        const bootstrapTab = await withTimeout(
+          () => chrome.tabs.get(bootstrapTabId),
+          TAB_OPERATION_TIMEOUT,
+          { action: "tabs", phase: "tabs.get:bootstrap", tabId: bootstrapTabId },
+        );
+        const currentUrl = bootstrapTab.pendingUrl || bootstrapTab.url;
+        const changes = {};
+        if (!isTargetUrl(currentUrl, targetUrl)) changes.url = targetUrl;
+        if (foreground) changes.active = true;
+        const tab = Object.keys(changes).length
+          ? await withTimeout(
+              () => chrome.tabs.update(bootstrapTabId, changes),
+              TAB_OPERATION_TIMEOUT,
+              {
+                action: "tabs",
+                phase: "tabs.update:bootstrap",
+                tabId: bootstrapTabId,
+              },
+            )
+          : bootstrapTab;
+        return { ...tab, url: tab.pendingUrl || tab.url || targetUrl };
+      } catch (err) {
+        // update 超时后底层操作可能仍会完成；此时不能再创建第二个 tab。
+        throw err;
+      }
+    }
+
+    return withTimeout(
+      () =>
+        chrome.tabs.create({
+          windowId,
+          url: targetUrl,
+          active: foreground,
+        }),
+      TAB_OPERATION_TIMEOUT,
+      { action: "tabs", phase: "tabs.create" },
+    );
+  });
 }
 
 async function handleTabs(cmd, workspace) {
@@ -1636,6 +2235,8 @@ async function handleTabs(cmd, workspace) {
           url: t.url,
           title: t.title,
           active: t.active,
+          status: t.status,
+          windowId: t.windowId,
         })),
       };
     }
@@ -1647,15 +2248,12 @@ async function handleTabs(cmd, workspace) {
         cmd.foreground !== undefined
           ? cmd.foreground === true
           : globalForeground;
-      const windowId = await getAutomationWindow(workspace, {
-        focused: foreground,
-      });
-      const tab = await chrome.tabs.create({
-        windowId,
-        url: cmd.url ?? BLANK_PAGE,
-        active: foreground,
-      });
-      return { id: cmd.id, ok: true, data: { tabId: tab.id, url: tab.url } };
+      const tab = await createAutomationTab(cmd, workspace, foreground);
+      return {
+        id: cmd.id,
+        ok: true,
+        data: { tabId: tab.id, url: tab.pendingUrl || tab.url || cmd.url },
+      };
     }
     case "close": {
       const { globalKeepTab: storedKeepTab } =
@@ -1673,13 +2271,11 @@ async function handleTabs(cmd, workspace) {
             ok: false,
             error: `Tab index ${cmd.index} 不存在`,
           };
-        await chrome.tabs.remove(target.id);
-        await cdpDetach(target.id);
+        await closeTabForCommand(cmd, target.id);
         return { id: cmd.id, ok: true, data: { closed: target.id } };
       }
       const tabId = await resolveTabId(cmd.tabId, workspace);
-      await chrome.tabs.remove(tabId);
-      await cdpDetach(tabId);
+      await closeTabForCommand(cmd, tabId);
       return { id: cmd.id, ok: true, data: { closed: tabId } };
     }
     case "select": {
@@ -1690,7 +2286,11 @@ async function handleTabs(cmd, workspace) {
         const session = automationSessions.get(workspace);
         let tab;
         try {
-          tab = await chrome.tabs.get(cmd.tabId);
+          tab = await withTimeout(
+            () => chrome.tabs.get(cmd.tabId),
+            TAB_OPERATION_TIMEOUT,
+            { action: "tabs", phase: "tabs.get", tabId: cmd.tabId },
+          );
         } catch {
           return { id: cmd.id, ok: false, error: `Tab ${cmd.tabId} 不存在` };
         }
@@ -1701,7 +2301,16 @@ async function handleTabs(cmd, workspace) {
             error: `Tab ${cmd.tabId} 不属于自动化窗口`,
           };
         }
-        await chrome.tabs.update(cmd.tabId, { active: true });
+        await withTabOperationQueue(
+          cmd.tabId,
+          () =>
+            withTimeout(
+              () => chrome.tabs.update(cmd.tabId, { active: true }),
+              TAB_OPERATION_TIMEOUT,
+              { action: "tabs", phase: "tabs.update", tabId: cmd.tabId },
+            ),
+          tabOperationContext(cmd),
+        );
         return { id: cmd.id, ok: true, data: { selected: cmd.tabId } };
       }
       const tabs = await listAutomationWebTabs(workspace);
@@ -1712,12 +2321,37 @@ async function handleTabs(cmd, workspace) {
           ok: false,
           error: `Tab index ${cmd.index} 不存在`,
         };
-      await chrome.tabs.update(target.id, { active: true });
+      await withTabOperationQueue(
+        target.id,
+        () =>
+          withTimeout(
+            () => chrome.tabs.update(target.id, { active: true }),
+            TAB_OPERATION_TIMEOUT,
+            { action: "tabs", phase: "tabs.update", tabId: target.id },
+          ),
+        tabOperationContext(cmd),
+      );
       return { id: cmd.id, ok: true, data: { selected: target.id } };
     }
     default:
       return { id: cmd.id, ok: false, error: `未知 tabs op: ${cmd.op}` };
   }
+}
+
+async function closeTabForCommand(cmd, tabId) {
+  return withTabOperationQueue(
+    tabId,
+    () =>
+      withTabQueue(tabId, async () => {
+        await cdpDetachUnlocked(tabId, "tabs");
+        await withTimeout(
+          () => chrome.tabs.remove(tabId),
+          TAB_OPERATION_TIMEOUT,
+          { action: "tabs", phase: "tabs.remove", tabId },
+        );
+      }),
+    tabOperationContext(cmd),
+  );
 }
 
 async function handleCookies(cmd) {
@@ -1731,7 +2365,11 @@ async function handleCookies(cmd) {
   const details = {};
   if (cmd.domain) details.domain = cmd.domain;
   if (cmd.url) details.url = cmd.url;
-  const cookies = await chrome.cookies.getAll(details);
+  const cookies = await withTimeout(
+    () => chrome.cookies.getAll(details),
+    TAB_OPERATION_TIMEOUT,
+    { action: "cookies", phase: "cookies.getAll" },
+  );
   return {
     id: cmd.id,
     ok: true,
@@ -1750,11 +2388,16 @@ async function handleCookies(cmd) {
 async function handleScreenshot(cmd, workspace) {
   const tabId = await resolveTabId(cmd.tabId, workspace);
   try {
-    const data = await cdpScreenshot(tabId, {
-      format: cmd.format,
-      quality: cmd.quality,
-      fullPage: cmd.fullPage,
-    });
+    const data = await withTabOperationQueue(
+      tabId,
+      () =>
+        cdpScreenshot(tabId, {
+          format: cmd.format,
+          quality: cmd.quality,
+          fullPage: cmd.fullPage,
+        }),
+      tabOperationContext(cmd),
+    );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return {
@@ -1765,10 +2408,15 @@ async function handleScreenshot(cmd, workspace) {
   }
 }
 
-async function handleRecording(cmd) {
+async function handleRecording(cmd, commandSocket = null) {
   const op = cmd.op;
   if (op === "start") {
-    const data = await startUiRecording(cmd.tabId, cmd.sessionId);
+    const tabId = await resolveRecordingTabId(cmd.tabId);
+    const data = await withTabOperationQueue(
+      tabId,
+      () => startUiRecording(tabId, cmd.sessionId, commandSocket),
+      tabOperationContext(cmd),
+    );
     return {
       id: cmd.id,
       ok: true,
@@ -1777,7 +2425,13 @@ async function handleRecording(cmd) {
   }
 
   if (op === "stop") {
-    const data = await stopUiRecording(cmd.sessionId, cmd.tabId);
+    const tabId = findActiveRecordingTabId(cmd.sessionId, cmd.tabId);
+    if (!Number.isInteger(tabId)) throw new Error("未找到正在录制的标签页");
+    const data = await withTabOperationQueue(
+      tabId,
+      () => stopUiRecording(cmd.sessionId, tabId),
+      tabOperationContext(cmd),
+    );
     return {
       id: cmd.id,
       ok: true,
@@ -1799,11 +2453,17 @@ async function handleRecording(cmd) {
   }
 
   if (op === "replay") {
-    const response = await replayUiRecording({
-      tabId: cmd.tabId,
-      events: cmd.events,
-      options: cmd.options,
-    });
+    const tabId = await resolveRecordingTabId(cmd.tabId);
+    const response = await withTabOperationQueue(
+      tabId,
+      () =>
+        replayUiRecording({
+          tabId,
+          events: cmd.events,
+          options: cmd.options,
+        }),
+      tabOperationContext(cmd),
+    );
     return {
       id: cmd.id,
       ok: response?.ok !== false,
@@ -1816,15 +2476,31 @@ async function handleRecording(cmd) {
 }
 
 async function handleCloseWindow(cmd, workspace) {
+  const otherActiveCommands = Math.max(
+    0,
+    (activeCommandsByWorkspace.get(workspace) || 1) - 1,
+  );
+  if (otherActiveCommands > 0) {
+    return {
+      id: cmd.id,
+      ok: false,
+      error: `WORKSPACE_BUSY action=close-window phase=active-commands tabId=unknown elapsedMs=0: workspace=${workspace} 仍有 ${otherActiveCommands} 条命令执行中`,
+    };
+  }
   const session = automationSessions.get(workspace);
   if (session) {
     try {
-      await chrome.windows.remove(session.windowId);
+      await withTimeout(
+        () => chrome.windows.remove(session.windowId),
+        TAB_OPERATION_TIMEOUT,
+        { action: "close-window", phase: "windows.remove" },
+      );
     } catch {
       /* 已关闭 */
     }
     if (session.idleTimer) clearTimeout(session.idleTimer);
     automationSessions.delete(workspace);
+    await persistAutomationSessions();
     broadcastSessions();
   }
   return { id: cmd.id, ok: true, data: { closed: true } };
@@ -1837,9 +2513,17 @@ async function handleSessions(cmd) {
       workspace,
       windowId: session.windowId,
       tabCount: (
-        await chrome.tabs.query({ windowId: session.windowId })
+        await withTimeout(
+          () => chrome.tabs.query({ windowId: session.windowId }),
+          TAB_OPERATION_TIMEOUT,
+          { action: "sessions", phase: "tabs.query" },
+        )
       ).filter((t) => isDebuggableUrl(t.url)).length,
-      idleMsRemaining: Math.max(0, session.idleDeadlineAt - now),
+      activeCommandCount: session.activeCommandCount || 0,
+      idleMsRemaining:
+        session.idleDeadlineAt === null
+          ? null
+          : Math.max(0, session.idleDeadlineAt - now),
     })),
   );
   return { id: cmd.id, ok: true, data };
@@ -1901,9 +2585,17 @@ async function buildSessionsMsg() {
       workspace,
       windowId: session.windowId,
       tabCount: (
-        await chrome.tabs.query({ windowId: session.windowId })
+        await withTimeout(
+          () => chrome.tabs.query({ windowId: session.windowId }),
+          TAB_OPERATION_TIMEOUT,
+          { action: "sessions", phase: "tabs.query" },
+        )
       ).filter((t) => isDebuggableUrl(t.url)).length,
-      idleMsRemaining: Math.max(0, session.idleDeadlineAt - now),
+      activeCommandCount: session.activeCommandCount || 0,
+      idleMsRemaining:
+        session.idleDeadlineAt === null
+          ? null
+          : Math.max(0, session.idleDeadlineAt - now),
     })),
   );
   return { type: "sessions", sessions };
@@ -1974,9 +2666,64 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => popupPorts.delete(port));
 });
 
+function handleRecordingEvent(message, sender) {
+  const tabId = sender.tab?.id;
+  if (!tabId) return false;
+  const recording = recordingTabs.get(tabId);
+  if (
+    !recording ||
+    recording.stopping ||
+    recording.sessionId !== message.sessionId
+  )
+    return false;
+  const event = {
+    ...message.event,
+    frameId: sender.frameId ?? 0,
+    frameUrl: sender.url || message.event?.url,
+  };
+  if (shouldSkipDuplicateRecordingEvent(recording, event)) return false;
+  recording.events.push(event);
+  upsertRecordingFrame(recording, {
+    frameId: sender.frameId ?? 0,
+    url: sender.url || message.event?.url,
+    ok: true,
+    response: {
+      url: sender.url || message.event?.url,
+      title: message.event?.title,
+      frameContext: message.event?.frameContext,
+    },
+  });
+  if ((sender.frameId ?? 0) === 0) {
+    if (message.event?.url) recording.url = message.event.url;
+    if (message.event?.title) recording.title = message.event.title;
+  }
+
+  const eventSocket = recording.eventSocket;
+  if (eventSocket?.readyState === WebSocket.OPEN) {
+    try {
+      eventSocket.send(
+        JSON.stringify({
+          type: "recording-event",
+          sessionId: recording.sessionId,
+          tabId,
+          event,
+        }),
+      );
+    } catch {
+      /* 连接关闭后由 stop 返回本地录制结果；事件绝不改发到新 socket */
+    }
+  }
+  return false;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "tabworks-ui-recording-start") {
-    startUiRecording(message.tabId)
+    resolveRecordingTabId(message.tabId)
+      .then((tabId) =>
+        runUiTabOperation(tabId, "recording-start", () =>
+          startUiRecording(tabId),
+        ),
+      )
       .then((data) => ({ ok: true, ...data }))
       .then(sendResponse)
       .catch((err) =>
@@ -1989,7 +2736,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "tabworks-ui-recording-stop") {
-    stopUiRecording(message.sessionId, message.tabId)
+    const tabId = findActiveRecordingTabId(message.sessionId, message.tabId);
+    if (!Number.isInteger(tabId)) {
+      sendResponse({ ok: false, error: "未找到正在录制的标签页" });
+      return true;
+    }
+    runUiTabOperation(tabId, "recording-stop", () =>
+      stopUiRecording(message.sessionId, tabId),
+    )
       .then((data) => ({ ok: true, ...data }))
       .then(sendResponse)
       .catch((err) =>
@@ -2038,7 +2792,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "无法定位当前标签页" });
       return true;
     }
-    cdpMouseClick(tabId, message.x, message.y)
+    runUiTabOperation(tabId, "mouse", () =>
+      cdpMouseClick(tabId, message.x, message.y),
+    )
       .then((data) => ({ ok: true, ...data }))
       .then(sendResponse)
       .catch((err) =>
@@ -2051,7 +2807,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "tabworks-ui-recording-replay") {
-    replayUiRecording(message)
+    resolveRecordingTabId(message.tabId)
+      .then((tabId) =>
+        runUiTabOperation(tabId, "recording-replay", () =>
+          replayUiRecording({ ...message, tabId }),
+        ),
+      )
       .then((data) => ({ ok: data?.ok !== false, ...data }))
       .then(sendResponse)
       .catch((err) =>
@@ -2075,38 +2836,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type !== "tabworks-recording-event") return false;
-  const tabId = sender.tab?.id;
-  if (!tabId) return false;
-  const recording = recordingTabs.get(tabId);
-  if (!recording || recording.sessionId !== message.sessionId) return false;
-  const event = {
-    ...message.event,
-    frameId: sender.frameId ?? 0,
-    frameUrl: sender.url || message.event?.url,
-  };
-  if (shouldSkipDuplicateRecordingEvent(recording, event)) return false;
-  recording.events.push(event);
-  upsertRecordingFrame(recording, {
-    frameId: sender.frameId ?? 0,
-    url: sender.url || message.event?.url,
-    ok: true,
-    response: {
-      url: sender.url || message.event?.url,
-      title: message.event?.title,
-      frameContext: message.event?.frameContext,
-    },
-  });
-  if ((sender.frameId ?? 0) === 0) {
-    if (message.event?.url) recording.url = message.event.url;
-    if (message.event?.title) recording.title = message.event.title;
-  }
-  return false;
+  return handleRecordingEvent(message, sender);
 });
 
 async function attachRecordingToFrame(tabId, frameId, url) {
   if (!Number.isInteger(tabId) || !Number.isInteger(frameId)) return;
   const recording = recordingTabs.get(tabId);
-  if (!recording || !isDebuggableUrl(url)) return;
+  if (!recording || recording.stopping || !isDebuggableUrl(url)) return;
   try {
     await injectRecorderIntoFrames(tabId, frameId);
     const response = await chrome.tabs.sendMessage(
@@ -2142,25 +2878,81 @@ chrome.webNavigation.onCompleted.addListener((details) => {
 
 // ─── 生命周期 ────────────────────────────────────────────────────────
 
-let initialized = false;
+let initializePromise = null;
+
+async function ensureKeepaliveAlarm() {
+  const alarm = await chrome.alarms.get(KEEPALIVE_ALARM);
+  if (!alarm || alarm.periodInMinutes !== 0.5) {
+    await chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+  }
+}
+
+async function restoreAutomationSessions() {
+  const stored = await chrome.storage.session.get(AUTOMATION_SESSIONS_KEY);
+  const sessions = Array.isArray(stored?.[AUTOMATION_SESSIONS_KEY])
+    ? stored[AUTOMATION_SESSIONS_KEY]
+    : [];
+  for (const item of sessions) {
+    if (
+      !item ||
+      typeof item.workspace !== "string" ||
+      !Number.isInteger(item.windowId)
+    ) {
+      continue;
+    }
+    try {
+      await withTimeout(
+        () => chrome.windows.get(item.windowId),
+        TAB_OPERATION_TIMEOUT,
+        { action: "restore", phase: "windows.get" },
+      );
+      const session = {
+        windowId: item.windowId,
+        idleTimer: null,
+        idleDeadlineAt: Number.isFinite(item.idleDeadlineAt)
+          ? item.idleDeadlineAt
+          : Date.now() + WINDOW_IDLE_TIMEOUT,
+        activeCommandCount: 0,
+      };
+      automationSessions.set(item.workspace, session);
+      resetWindowIdleTimer(
+        item.workspace,
+        Math.max(0, session.idleDeadlineAt - Date.now()),
+      );
+    } catch {
+      /* 窗口在 worker 停止期间已被关闭 */
+    }
+  }
+  await persistAutomationSessions();
+}
 
 function initialize() {
-  if (initialized) return;
-  initialized = true;
-  chrome.alarms.create("keepalive", { periodInMinutes: 0.4 });
+  if (initializePromise) return initializePromise;
   registerCdpListeners();
-  connect();
-  updateBadge();
-  console.log("[tabworks] TabWorks Bridge 扩展已初始化");
+  initializePromise = (async () => {
+    await ensureKeepaliveAlarm();
+    await restoreAutomationSessions();
+    connect();
+    updateBadge();
+    console.log("[tabworks] TabWorks Bridge 扩展已初始化");
+  })().catch((err) => {
+    initializePromise = null;
+    console.error("[tabworks] 初始化失败:", err);
+    throw err;
+  });
+  return initializePromise;
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  initialize();
+  void initialize();
 });
-chrome.runtime.onStartup.addListener(() => initialize());
+chrome.runtime.onStartup.addListener(() => void initialize());
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "keepalive") connect();
+  if (alarm.name === KEEPALIVE_ALARM) connect();
 });
+
+// MV3 worker 每次被唤醒都会重新执行模块；alarm 只负责断线时的兜底唤醒。
+void initialize();
 
 // 兼容旧版一次性消息查询
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -2173,3 +2965,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   return false;
 });
+
+// 仅导出可独立验证的边界；MV3 service worker 仍以模块方式加载。
+export const __testing = {
+  withTimeout,
+  withTabQueue,
+  withTabOperationQueue,
+  cdpEvaluate,
+  handleCommand,
+  handleNavigate,
+  connect,
+  initialize,
+  restoreAutomationSessions,
+  getAutomationWindow,
+  automationSessions,
+  recordingTabs,
+  handleRecordingEvent,
+  getCurrentSocket: () => ws,
+};

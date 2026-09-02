@@ -612,8 +612,14 @@
   }
 
   function addCaptureListener(type, handler) {
-    window.addEventListener(type, handler, true);
-    document.addEventListener(type, handler, true);
+    const guardedHandler = (event) => {
+      // 脚本只在开始录制时动态注入；停止后保留消息端点用于回放，
+      // 但不再采集、分析或同步页面事件。
+      if (!recording && !replaying) return;
+      handler(event);
+    };
+    window.addEventListener(type, guardedHandler, true);
+    document.addEventListener(type, guardedHandler, true);
   }
 
   addCaptureListener("click", (event) => {

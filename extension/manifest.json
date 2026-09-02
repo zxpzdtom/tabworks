@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TabWorks Bridge",
-  "version": "1.0.3",
+  "version": "1.0.4",
+  "minimum_chrome_version": "116",
   "description": "通过 CDP 连接本地服务，录制、回放并下载浏览器自动化脚本。",
   "permissions": [
     "debugger",
@@ -17,25 +18,6 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["recorder-main.js"],
-      "run_at": "document_start",
-      "all_frames": true,
-      "match_about_blank": true,
-      "match_origin_as_fallback": true,
-      "world": "MAIN"
-    },
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["recorder-content.js"],
-      "run_at": "document_start",
-      "all_frames": true,
-      "match_about_blank": true,
-      "match_origin_as_fallback": true
-    }
-  ],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

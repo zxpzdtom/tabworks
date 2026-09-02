@@ -94,6 +94,15 @@ function isExtensionConnected() {
   return extensionWs !== null && extensionWs.readyState === 1; // WebSocket.OPEN = 1
 }
 
+function extensionCommandTimeout(command) {
+  const requested =
+    command.action === "navigate"
+      ? Number(command.timeoutMs) + 5000
+      : Number(command.commandTimeoutMs);
+  if (!Number.isFinite(requested) || requested <= 0) return 30000;
+  return Math.max(30000, Math.min(Math.floor(requested), 125000));
+}
+
 // ─── 向扩展发送命令 ──────────────────────────────────────────────────
 
 function sendToExtension(command) {
@@ -108,10 +117,11 @@ function sendToExtension(command) {
     }
 
     const id = `cmd_${++nextId}_${Date.now()}`;
+    const timeoutMs = extensionCommandTimeout(command);
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(new Error(`命令超时（30s）：${command.action}`));
-    }, 30000);
+      reject(new Error(`命令超时（${timeoutMs}ms）：${command.action}`));
+    }, timeoutMs);
 
     pending.set(id, { resolve, reject, timer });
     extensionWs.send(JSON.stringify({ ...command, id }));
@@ -791,6 +801,8 @@ const httpServer = http.createServer(async (req, res) => {
         action: "navigate",
         tabId: body.pageId ?? body.tabId,
         url: body.url,
+        waitUntil: body.waitUntil,
+        timeoutMs: body.timeoutMs,
         workspace: body.workspace,
       });
       return respond(res, 200, result);
