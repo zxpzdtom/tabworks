@@ -4,7 +4,7 @@
 
 import type { ArgDef, ArgValue, Args, Format } from "./types";
 
-const RESERVED_FLAGS = new Set(["format", "help", "h"]);
+const RESERVED_FLAGS = new Set(["format", "json", "help", "h"]);
 
 function parseBoolean(name: string, raw: string): boolean {
   const normalized = raw.trim().toLowerCase();
@@ -13,7 +13,7 @@ function parseBoolean(name: string, raw: string): boolean {
   throw new Error(`参数 --${name} 必须为 boolean：true | false`);
 }
 
-function parseValue(def: ArgDef, raw: string): ArgValue {
+export function parseValue(def: ArgDef, raw: string): ArgValue {
   switch (def.type) {
     case "string":
       return raw;
@@ -36,15 +36,9 @@ function parseValue(def: ArgDef, raw: string): ArgValue {
   }
 }
 
-export function parseArgs(defs: ArgDef[], argv: string[]): Args {
+export function parseCliArgs(defs: ArgDef[], argv: string[]): Args {
   const args: Args = {};
   const defMap = new Map(defs.map((def) => [def.name, def]));
-
-  for (const def of defs) {
-    if (def.default !== undefined) {
-      args[def.name] = def.default;
-    }
-  }
 
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
@@ -81,24 +75,32 @@ export function parseArgs(defs: ArgDef[], argv: string[]): Args {
     i++;
   }
 
-  for (const def of defs) {
-    if (def.required && args[def.name] === undefined) {
-      throw new Error(`缺少必填参数：--${def.name}`);
-    }
-  }
+  return args;
+}
 
+/** Backward-compatible parser for callers that only use constant defaults. */
+export function parseArgs(defs: ArgDef[], argv: string[]): Args {
+  const args: Args = {};
+  for (const def of defs) {
+    if (def.default !== undefined && typeof def.default !== "function") args[def.name] = def.default;
+  }
+  Object.assign(args, parseCliArgs(defs, argv));
+  for (const def of defs) {
+    if (def.required && args[def.name] === undefined) throw new Error(`缺少必填参数：--${def.name}`);
+  }
   return args;
 }
 
 export function extractFormat(argv: string[]): Format {
+  if (argv.includes("--json")) return "json";
   const index = argv.findIndex((arg) => arg === "--format");
-  if (index === -1) return "table";
+  if (index === -1) return "auto";
 
   const raw = argv[index + 1];
   if (!raw || raw.startsWith("--")) {
-    throw new Error("参数 --format 需要一个值：table | json");
+    throw new Error("参数 --format 需要一个值：auto | table | list | json");
   }
 
-  if (raw === "table" || raw === "json") return raw;
-  throw new Error(`不支持的输出格式：${raw}（仅支持 table | json）`);
+  if (["auto", "table", "list", "json"].includes(raw)) return raw as Format;
+  throw new Error(`不支持的输出格式：${raw}（支持 auto | table | list | json）`);
 }

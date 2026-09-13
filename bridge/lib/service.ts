@@ -9,13 +9,12 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { bridgeHost, bridgePort, ensureTabworksHome, PROJECT_DIR, tabworksPaths } from "./paths";
 
-const PROJECT_DIR = join(import.meta.dir, "..", "..");
-const BRIDGE_ENTRY = join(PROJECT_DIR, "bridge", "scripts", "browser-bridge.mjs");
-const DEFAULT_PORT = process.env.TABWORKS_PORT || "9527";
-const STATE_DIR = join(PROJECT_DIR, ".bridge");
-const DAEMON_META_FILE = join(STATE_DIR, "daemon.json");
-const DAEMON_LOG_FILE = join(STATE_DIR, "daemon.log");
+const USER_PATHS = tabworksPaths();
+const BRIDGE_ENTRY = USER_PATHS.bridgeEntry;
+const DAEMON_META_FILE = USER_PATHS.daemonFile;
+const DAEMON_LOG_FILE = USER_PATHS.daemonLogFile;
 
 type BridgeStatusPayload = {
   ok?: boolean;
@@ -27,6 +26,9 @@ type BridgeStatusPayload = {
   extensionConnected?: boolean;
   extensionVersion?: string | null;
   pendingCommands?: number;
+  socketConnected?: boolean;
+  lastExtensionResponseAt?: string | null;
+  lastExtensionResponseAgeMs?: number | null;
 };
 
 type DaemonMeta = {
@@ -35,14 +37,27 @@ type DaemonMeta = {
   port: number;
   startedAt: string;
   logFile: string;
+  entry?: string;
 };
 
+export function classifyDaemonState(
+  meta: DaemonMeta | null,
+  bridgeOnline: boolean,
+  processAlive: boolean,
+  expectedEntry = BRIDGE_ENTRY,
+): "healthy" | "absent" | "stale" | "recoverable" | "unsafe" {
+  if (bridgeOnline) return "healthy";
+  if (!meta) return "absent";
+  if (!processAlive) return "stale";
+  return meta.entry === expectedEntry ? "recoverable" : "unsafe";
+}
+
 function normalizedPort(port?: string): string {
-  return port ?? process.env.TABWORKS_PORT ?? DEFAULT_PORT;
+  return bridgePort(port);
 }
 
 export function bridgeUrl(port?: string): string {
-  return `http://127.0.0.1:${normalizedPort(port)}`;
+  return bridgeHost(port);
 }
 
 async function requestBridge(
@@ -55,7 +70,7 @@ async function requestBridge(
       options.method && options.method !== "GET"
         ? { "X-TabWorks-Bridge": "1" }
         : undefined,
-    signal: AbortSignal.timeout(options.timeoutMs ?? 3000),
+    signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.TABWORKS_BRIDGE_REQUEST_TIMEOUT_MS || 3000)),
   });
   const text = await res.text();
   let data: unknown = null;
@@ -87,12 +102,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function ensureStateDir(): Promise<void> {
-  await mkdir(STATE_DIR, { recursive: true });
+  await ensureTabworksHome();
 }
 
 async function readDaemonMeta(): Promise<DaemonMeta | null> {
   try {
-    return JSON.parse(await readFile(DAEMON_META_FILE, "utf8")) as DaemonMeta;
+    const value = JSON.parse(await readFile(DAEMON_META_FILE, "utf8")) as Partial<DaemonMeta>;
+    if (!Number.isInteger(value.pid) || !value.host || !Number.isInteger(value.port)) return null;
+    return value as DaemonMeta;
   } catch {
     return null;
   }
@@ -162,6 +179,28 @@ async function cleanupStaleDaemonMeta(port?: string): Promise<DaemonMeta | null>
   return meta;
 }
 
+async function recoverUnhealthyDaemon(meta: DaemonMeta | null, port?: string): Promise<void> {
+  const state = classifyDaemonState(meta, false, Boolean(meta && isProcessAlive(meta.pid)));
+  if (state === "absent" || state === "stale") {
+    await clearDaemonMeta();
+    return;
+  }
+  if (state === "unsafe" || !meta) {
+    throw new Error(`daemon: 状态文件指向仍存活的未知进程 ${meta?.pid ?? "unknown"}；已停止自动恢复，请人工检查`);
+  }
+  try {
+    process.kill(meta.pid, "SIGTERM");
+  } catch {
+    await clearDaemonMeta();
+    return;
+  }
+  if (!(await waitForProcessExit(meta.pid, 3000))) {
+    throw new Error(`daemon: 异常进程 ${meta.pid} 无法安全停止`);
+  }
+  await clearDaemonMeta();
+  await waitForBridgeOffline(port, 1500);
+}
+
 export async function showBridgeStatus(json = false, port?: string): Promise<void> {
   const status = await fetchBridgeStatus(port);
 
@@ -223,10 +262,12 @@ export async function startBridgeService(port?: string): Promise<void> {
   await import(href);
 }
 
-export async function startBridgeDaemon(port?: string): Promise<void> {
+export async function startBridgeDaemon(port?: string, options: { quiet?: boolean } = {}): Promise<void> {
+  const output = (...values: unknown[]) => { if (!options.quiet) console.log(...values); };
+  await ensureTabworksHome();
   const running = await fetchBridgeStatus(port);
   if (running?.ok) {
-    console.log(
+    output(
       `daemon: running (${bridgeUrl(port)}${running.extensionConnected ? "，扩展已连接" : "，等待扩展连接"})`,
     );
     return;
@@ -236,11 +277,12 @@ export async function startBridgeDaemon(port?: string): Promise<void> {
   if (meta && isProcessAlive(meta.pid)) {
     const ready = await waitForBridgeOnline(port, 4000);
     if (ready?.ok) {
-      console.log(
+      output(
         `daemon: running (${bridgeUrl(port)}${ready.extensionConnected ? "，扩展已连接" : "，等待扩展连接"})`,
       );
       return;
     }
+    await recoverUnhealthyDaemon(meta, port);
   }
 
   await ensureStateDir();
@@ -267,6 +309,7 @@ export async function startBridgeDaemon(port?: string): Promise<void> {
     port: parseInt(normalizedPort(port), 10),
     startedAt: new Date().toISOString(),
     logFile: DAEMON_LOG_FILE,
+    entry: BRIDGE_ENTRY,
   });
 
   const ready = await waitForBridgeOnline(port, 5000);
@@ -275,8 +318,8 @@ export async function startBridgeDaemon(port?: string): Promise<void> {
     throw new Error(`daemon: 启动失败，请查看日志 ${DAEMON_LOG_FILE}`);
   }
 
-  console.log(`daemon: started (pid ${child.pid}) ${bridgeUrl(port)}`);
-  console.log(`daemon: log ${DAEMON_LOG_FILE}`);
+  output(`daemon: started (pid ${child.pid}) ${bridgeUrl(port)}`);
+  output(`daemon: log ${DAEMON_LOG_FILE}`);
 }
 
 export async function stopBridgeDaemon(port?: string): Promise<void> {
@@ -379,4 +422,17 @@ export async function showBridgeDaemonStatus(
     console.log(`daemon: startedAt ${payload.startedAt}`);
   }
   console.log(`daemon: log ${payload.logFile}`);
+}
+
+export async function daemonStatusSnapshot(port?: string): Promise<Record<string, unknown>> {
+  const status = await fetchBridgeStatus(port);
+  const meta = await cleanupStaleDaemonMeta(port);
+  return {
+    running: Boolean(status?.ok),
+    pid: status?.pid ?? meta?.pid ?? null,
+    port: status?.port ?? meta?.port ?? Number(normalizedPort(port)),
+    stateFile: DAEMON_META_FILE,
+    logFile: DAEMON_LOG_FILE,
+    bridge: status,
+  };
 }

@@ -1,9 +1,9 @@
 /**
  * lib/synthesize.ts — 从 explore 产物生成 Routine TypeScript 骨架
  *
- * 读取 .bridge/explore/<site>/ 或 .bridge/record/<site>/ 目录下的
+ * 读取 ~/.tabworks/explore/<site>/ 或 ~/.tabworks/record/<site>/ 目录下的
  * capabilities.json + endpoints.json，
- * 生成可直接运行的 Routine 代码到 bridge/sites/<site>/<name>.ts。
+ * 生成可直接运行的 Routine 代码到 ~/.tabworks/sites/<site>/<name>.ts。
  *
  * 生成策略：
  *   - 根据探索到的请求头判断协议类型
@@ -14,6 +14,7 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AnalyzedEndpoint, InferredCapability } from "./explore";
+import { ensureTabworksHome, tabworksPaths } from "./paths";
 
 // ─── 已知站点协议映射 ────────────────────────────────────────────────
 
@@ -303,10 +304,11 @@ export async function synthesize(opts: {
   exploreDir?: string;
   sitesDir?: string;
 }): Promise<SynthesizeResult> {
-  const exploreDir = opts.exploreDir ?? join(".bridge", "explore", opts.site);
-  const recordDir = join(".bridge", "record", opts.site);
+  await ensureTabworksHome();
+  const exploreDir = opts.exploreDir ?? join(tabworksPaths().exploreDir, opts.site);
+  const recordDir = join(tabworksPaths().recordDir, opts.site);
   const sitesDir =
-    opts.sitesDir ?? join(import.meta.dir, "..", "sites", opts.site);
+    opts.sitesDir ?? join(tabworksPaths().sitesDir, opts.site);
 
   // 优先读取 explore 产物，缺失时回退到 record 产物
   let capabilities: InferredCapability[];

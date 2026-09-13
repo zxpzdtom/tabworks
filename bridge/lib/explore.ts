@@ -11,6 +11,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BridgePage, checkBridge, closeTab, openTab } from "./bridge";
+import { ensureTabworksHome, tabworksPaths } from "./paths";
 
 // ─── 类型 ────────────────────────────────────────────────────────────
 
@@ -471,7 +472,8 @@ export async function exploreUrl(opts: {
   });
 
   // 7. 写产物到磁盘
-  const outDir = opts.outDir ?? join(".bridge", "explore", site);
+  await ensureTabworksHome();
+  const outDir = opts.outDir ?? join(tabworksPaths().exploreDir, site);
   await mkdir(outDir, { recursive: true });
 
   const result: ExploreResult = {

@@ -9,30 +9,31 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
+import { bridgeHost, ensureTabworksHome, tabworksPaths } from "./paths";
 import type { Page } from "./types";
 
-const DEFAULT_BRIDGE_PORT = process.env.TABWORKS_PORT || "9527";
-const BRIDGE_HOST =
-  process.env.TABWORKS_BRIDGE_HOST ??
-  `http://127.0.0.1:${DEFAULT_BRIDGE_PORT}`;
+function requestTimeoutMs(): number {
+  const value = Number(process.env.TABWORKS_BRIDGE_REQUEST_TIMEOUT_MS ?? 30_000);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 30_000;
+}
 
-/** 截图保存目录：项目根下的 logs/screenshots/ */
-const SCREENSHOTS_DIR = join(
-  import.meta.dirname,
-  "..",
-  "..",
-  "logs",
-  "screenshots",
-);
+export function bridgeRequestTimeoutMs(): number {
+  return requestTimeoutMs();
+}
+
+export function navigationReady(mode: "load" | "url", readyState: string, url: string): boolean {
+  return mode === "url" ? /^https?:\/\//i.test(url) : readyState === "complete";
+}
 
 // ─── HTTP 工具 ───────────────────────────────────────────────────────
 
-async function fetchBridgeStatus(host: string): Promise<{
+export async function fetchBridgeStatus(host = bridgeHost(), timeoutMs = 2000): Promise<{
   ok: boolean;
   extensionConnected: boolean;
+  [key: string]: unknown;
 }> {
   const res = await fetch(`${host}/status`, {
-    signal: AbortSignal.timeout(2000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`Bridge 状态异常（HTTP ${res.status}）`);
   return (await res.json()) as {
@@ -42,13 +43,14 @@ async function fetchBridgeStatus(host: string): Promise<{
 }
 
 async function resolveBridgeHost(): Promise<string> {
-  return BRIDGE_HOST;
+  return bridgeHost();
 }
 
-async function callWithHost<T = unknown>(
+export async function callBridgeWithHost<T = unknown>(
   host: string,
   path: string,
   body?: unknown,
+  timeoutMs = requestTimeoutMs(),
 ): Promise<T> {
   const res = await fetch(`${host}${path}`, {
     method: body !== undefined ? "POST" : "GET",
@@ -57,6 +59,7 @@ async function callWithHost<T = unknown>(
       "X-TabWorks-Bridge": "1",
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   const text = await res.text();
@@ -79,36 +82,49 @@ async function callWithHost<T = unknown>(
 
 async function call<T = unknown>(path: string, body?: unknown): Promise<T> {
   const host = await resolveBridgeHost();
-  return callWithHost<T>(host, path, body);
+  try {
+    return await callBridgeWithHost<T>(host, path, body);
+  } catch (error) {
+    const status = await fetchBridgeStatus(host, 800).catch(() => null);
+    if (status?.ok) throw error;
+    await ensureBridgeReady({ autoStart: true, requireExtension: true });
+    return callBridgeWithHost<T>(host, path, body);
+  }
 }
 
 // ─── 状态检查 ────────────────────────────────────────────────────────
 
-export async function checkBridge(): Promise<void> {
-  let status: { ok: boolean; extensionConnected: boolean };
+export async function ensureBridgeReady(options: {
+  autoStart?: boolean;
+  requireExtension?: boolean;
+  extensionWaitMs?: number;
+} = {}): Promise<Record<string, unknown>> {
+  const { autoStart = true, requireExtension = true, extensionWaitMs = 45_000 } = options;
+  let status: Record<string, unknown> | null = null;
   const bridgeHost = await resolveBridgeHost();
   try {
     status = await fetchBridgeStatus(bridgeHost);
   } catch {
-    throw new Error(
-      "Browser Bridge 未启动，请先运行：tw serve、make dev 或 make daemon",
-    );
+    if (!autoStart) throw new Error("Browser Bridge 未启动，请先运行：tw daemon start");
+    process.stderr.write("Bridge 未启动，正在后台拉起…\n");
+    const { startBridgeDaemon } = await import("./service");
+    await startBridgeDaemon(undefined, { quiet: true });
+    status = await fetchBridgeStatus(bridgeHost, 3000);
   }
   if (!status.ok) throw new Error("Browser Bridge 状态异常");
-  if (!status.extensionConnected) {
-    // 扩展未连接：轮询等待最多 30s（扩展安装后会自动连入 bridge）
+  if (requireExtension && !status.extensionConnected) {
     process.stderr.write(
-      "Chrome 扩展未连接，等待扩展连入（最多 30s）...\n" +
+      `Chrome 扩展未连接，等待 MV3 扩展唤醒（最多 ${Math.ceil(extensionWaitMs / 1000)}s）...\n` +
         "如未安装，请从 Chrome Web Store 安装 TabWorks Bridge 扩展。\n",
     );
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + extensionWaitMs;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1000));
       try {
         const s = await fetchBridgeStatus(bridgeHost);
         if (s.ok && s.extensionConnected) {
           process.stderr.write("Chrome 扩展已连接\n");
-          return;
+          return s;
         }
       } catch {
         // bridge 可能短暂不可用，继续等待
@@ -118,6 +134,11 @@ export async function checkBridge(): Promise<void> {
       "Chrome 扩展未连接（等待超时），请从 Chrome Web Store 安装 TabWorks Bridge 扩展。",
     );
   }
+  return status;
+}
+
+export async function checkBridge(): Promise<void> {
+  await ensureBridgeReady({ autoStart: true, requireExtension: true });
 }
 
 // ─── Cookie 读取（扩展侧，绕过页面 CSP）────────────────────────────
@@ -137,7 +158,7 @@ export async function getCookie(domain: string, name: string): Promise<string> {
 // ─── Tab 生命周期 ────────────────────────────────────────────────────
 
 export async function openTab(
-  url: string,
+  url?: string,
   options: { foreground?: boolean } = {},
 ): Promise<number> {
   const res = await call<{ pageId: number }>("/open", {
@@ -200,8 +221,8 @@ export class BridgePage implements Page {
     throw lastErr;
   }
 
-  async goto(url: string): Promise<void> {
-    await call("/goto", { pageId: this.pageId, url });
+  async goto(url: string, options: { waitUntil?: "none" | "load"; timeoutMs?: number } = {}): Promise<void> {
+    await call("/goto", { pageId: this.pageId, url, ...options });
   }
 
   async inspect(): Promise<{ title: string; url: string; readyState: string }> {
@@ -245,6 +266,35 @@ export class BridgePage implements Page {
     if (this._log) this._log.debug({ selector }, "input ✓");
   }
 
+  async press(
+    target: string | { x: number; y: number },
+    options: { durationMs?: number; offsetX?: number; offsetY?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    return call("/press", {
+      pageId: this.pageId,
+      ...(typeof target === "string" ? { selector: target } : target),
+      ...options,
+    });
+  }
+
+  async drag(
+    from: string | { x: number; y: number },
+    to: string | { x: number; y: number } | { deltaX: number; deltaY: number },
+    options: { durationMs?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const fromBody = typeof from === "string" ? { fromSelector: from } : { fromX: from.x, fromY: from.y };
+    const toBody = typeof to === "string"
+      ? { toSelector: to }
+      : "deltaX" in to
+        ? to
+        : { toX: to.x, toY: to.y };
+    return call("/drag", { pageId: this.pageId, ...fromBody, ...toBody, ...options });
+  }
+
+  async key(key: string): Promise<void> {
+    await call("/key", { pageId: this.pageId, key });
+  }
+
   async scroll(
     direction: "up" | "down" | "top" | "bottom",
     distance = 3000,
@@ -272,12 +322,14 @@ export class BridgePage implements Page {
     if (this._log) this._log.debug({ format, fullPage }, "screenshot →");
 
     // 确保截图目录存在
-    await mkdir(SCREENSHOTS_DIR, { recursive: true });
+    await ensureTabworksHome();
+    const screenshotsDir = tabworksPaths().screenshotsDir;
+    await mkdir(screenshotsDir, { recursive: true });
 
     // 生成唯一文件名并让 bridge 直接写入磁盘
     const ts = Date.now();
     const fileName = `${this.pageId}_${ts}.${format}`;
-    const filePath = join(SCREENSHOTS_DIR, fileName);
+    const filePath = join(screenshotsDir, fileName);
 
     // /capture 传入 file 参数时，bridge 把图片写到该路径并返回 { saved: filePath }
     const saved = await call<{ saved: string }>("/capture", {
@@ -301,9 +353,30 @@ export class BridgePage implements Page {
     return dataUri;
   }
 
+  async request<T = unknown>(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    sameOriginOnly?: boolean;
+  }): Promise<{ ok: boolean; status: number; url: string; headers: Array<[string, string]>; text: string; json: T | null }> {
+    return call("/request", { pageId: this.pageId, ...options });
+  }
+
   async waitForLoad(timeoutMs = 10000): Promise<void> {
+    await this.waitForReady("load", timeoutMs);
+  }
+
+  async waitForUrl(timeoutMs = 10000): Promise<void> {
+    await this.waitForReady("url", timeoutMs);
+  }
+
+  private async waitForReady(mode: "load" | "url", timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let stableUrl: string | null = null;
+    let lastUrl = "unknown";
+    let lastReadyState = "unknown";
+    let lastError = "";
     while (Date.now() < deadline) {
       try {
         // runJs 自带重试，这里关闭重试避免双重等待；silent 避免产生大量轮询日志
@@ -312,18 +385,24 @@ export class BridgePage implements Page {
           { retries: 0, silent: true },
         );
         const [state, url] = result.split("|");
-        if (state === "complete") {
+        lastReadyState = state || "unknown";
+        lastUrl = url || "unknown";
+        if (mode === "url" && navigationReady(mode, state, url)) return;
+        if (mode === "load" && navigationReady(mode, state, url)) {
           if (url === stableUrl) return; // URL 连续两次相同，认为稳定
           stableUrl = url;
         } else {
           stableUrl = null;
         }
-      } catch {
+      } catch (error) {
         // 页面导航中，runJs 暂时不可用，继续轮询
         stableUrl = null;
+        lastError = error instanceof Error ? error.message : String(error);
       }
       await new Promise((r) => setTimeout(r, 300));
     }
-    throw new Error(`页面加载超时（${timeoutMs}ms）`);
+    throw new Error(
+      `页面导航超时（${timeoutMs}ms，策略=${mode}，最后 URL=${lastUrl}，readyState=${lastReadyState}${lastError ? `，最后错误=${lastError}` : ""}）`,
+    );
   }
 }

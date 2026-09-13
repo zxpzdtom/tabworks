@@ -9,7 +9,7 @@
  *   - explore：自动模式（注入→等待→滚动→收集→分析）
  *   - record：交互模式（注入→用户操作→轮询→按 Enter 停止→分析）
  *
- * 产物目录：.bridge/record/<site>/
+ * 产物目录：~/.tabworks/record/<site>/
  *   - captured.json    — 原始捕获数据
  *   - endpoints.json   — 分析后的端点列表
  *   - capabilities.json — 推断的能力列表
@@ -24,6 +24,7 @@ import {
   closeTab,
   openTab,
 } from "./bridge";
+import { ensureTabworksHome, tabworksPaths } from "./paths";
 import {
   type AnalyzedEndpoint,
   type InferredCapability,
@@ -305,7 +306,8 @@ export async function recordUrl(opts: {
   });
 
   // 7. 写产物到磁盘
-  const outDir = opts.outDir ?? join(".bridge", "record", site);
+  await ensureTabworksHome();
+  const outDir = opts.outDir ?? join(tabworksPaths().recordDir, site);
   await mkdir(outDir, { recursive: true });
 
   const result: RecordResult = {

@@ -10,7 +10,7 @@ export type ArgValue = string | number | boolean;
 export interface ArgDef {
   name: string;
   type: ArgType;
-  default?: ArgValue;
+  default?: ArgValue | (() => ArgValue | Promise<ArgValue>);
   help?: string;
   required?: boolean;
 }
@@ -23,7 +23,7 @@ export type Args = Record<string, ArgValue>;
 /** 一行数据，key 为列名 */
 export type Row = Record<string, unknown>;
 
-export type Format = "table" | "json";
+export type Format = "auto" | "table" | "list" | "json";
 
 // ─── 风险等级 ────────────────────────────────────────────────────────
 
@@ -35,6 +35,16 @@ export type Format = "table" | "json";
  */
 export type Risk = "readonly" | "low" | "medium" | "high";
 
+export type NavReady = "load" | "url";
+export type RoutineSourceKind = "user" | "plugin" | "builtin";
+
+export interface RoutineSource {
+  kind: RoutineSourceKind;
+  label: string;
+  path: string;
+  packageName?: string;
+}
+
 // ─── 页面上下文 ──────────────────────────────────────────────────────
 
 export interface Page {
@@ -43,15 +53,26 @@ export interface Page {
     script: string,
     options?: { retries?: number; delayMs?: number; silent?: boolean },
   ): Promise<T>;
-  goto(url: string): Promise<void>;
+  goto(url: string, options?: { waitUntil?: "none" | "load"; timeoutMs?: number }): Promise<void>;
   inspect(): Promise<{ title: string; url: string; readyState: string }>;
   /** 等待页面加载完成（readyState === 'complete'），最多等 timeoutMs 毫秒 */
   waitForLoad(timeoutMs?: number): Promise<void>;
+  waitForUrl(timeoutMs?: number): Promise<void>;
   /** 点击 CSS 选择器匹配的元素 */
   tap(
     selector: string,
     options?: { mode?: "dom" | "mouse" },
   ): Promise<{ tag: string; text: string }>;
+  press(
+    target: string | { x: number; y: number },
+    options?: { durationMs?: number; offsetX?: number; offsetY?: number },
+  ): Promise<Record<string, unknown>>;
+  drag(
+    from: string | { x: number; y: number },
+    to: string | { x: number; y: number } | { deltaX: number; deltaY: number },
+    options?: { durationMs?: number },
+  ): Promise<Record<string, unknown>>;
+  key(key: string): Promise<void>;
   /** 向输入框写入文字 */
   input(selector: string, text: string): Promise<void>;
   /** 滚动页面 */
@@ -66,4 +87,49 @@ export interface Page {
     format?: "png" | "jpeg";
     fullPage?: boolean;
   }): Promise<string>;
+  request<T = unknown>(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    sameOriginOnly?: boolean;
+  }): Promise<{ ok: boolean; status: number; url: string; headers: Array<[string, string]>; text: string; json: T | null }>;
+}
+
+export interface RoutineSdk {
+  pageFetch<T = unknown>(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: unknown;
+    requestId?: string;
+  }): Promise<T>;
+  getCookie(domain: string, name: string): Promise<string>;
+}
+
+export interface ObjectRoutine {
+  site: string;
+  name: string;
+  description: string;
+  url: string;
+  risk: Risk;
+  args?: ArgDef[];
+  columns?: string[];
+  requiresBrowser?: boolean;
+  navReady?: NavReady;
+  navTimeoutMs?: number;
+  navOptional?: boolean;
+  run(page: Page | null, args: Args, sdk: RoutineSdk): Promise<Row[]> | Row[];
+  describeAction?(args: Args): string;
+  resolveRisk?(args: Args): Risk | Promise<Risk>;
+  resolveUrl?(args: Args): string | Promise<string>;
+}
+
+export interface PluginManifest {
+  site: string;
+  title: string;
+  description: string;
+  version: string;
+  pluginApiVersion: number;
+  routines: string[];
 }

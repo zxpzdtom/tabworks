@@ -9,16 +9,13 @@
  *       自动记录 url、method、requestId、耗时和错误，子类无需手写。
  */
 
-import { spawnSync } from "node:child_process";
-import { join } from "node:path";
 import type { Logger } from "pino";
-import { extractFormat, parseArgs } from "./args";
-import { BridgePage, checkBridge, closeTab, openTab } from "./bridge";
+import { extractFormat, parseCliArgs } from "./args";
+import { resolveConfiguredArgs } from "./config";
+import { BridgePage, closeTab, ensureBridgeReady, getCookie, openTab } from "./bridge";
 import { format } from "./format";
 import { rootLogger } from "./logger";
-import type { ArgDef, Args, Format, Page, Risk, Row } from "./types";
-
-const SETUP_SH = join(import.meta.dirname, "..", "..", "scripts", "setup.sh");
+import type { ArgDef, Args, Format, NavReady, Page, Risk, RoutineSdk, RoutineSource, Row } from "./types";
 
 export abstract class Routine {
   // ─── 子类必须声明的元数据 ──────────────────────────────────────────
@@ -48,6 +45,11 @@ export abstract class Routine {
    * 声明后支持 table 格式；不声明则只输出 json。
    */
   readonly columns?: string[];
+  readonly requiresBrowser: boolean = true;
+  readonly navReady: NavReady = "load";
+  readonly navTimeoutMs: number = 15_000;
+  readonly navOptional: boolean = false;
+  source?: RoutineSource;
 
   // ─── 核心逻辑（子类实现）─────────────────────────────────────────
 
@@ -70,10 +72,15 @@ export abstract class Routine {
     }
 
     const fmt = extractFormat(argv);
-    const parsedArgs = parseArgs(this.args, argv);
+    const cliArgs = parseCliArgs(this.args, argv);
+    const parsedArgs = await resolveConfiguredArgs(this.args, this.site, this.name, cliArgs);
+    const risk = await this.resolveRisk(parsedArgs);
+    const targetUrl = await this.resolveUrl(parsedArgs);
+    if (!["readonly", "low", "medium", "high"].includes(risk)) throw new Error(`resolveRisk() 返回了无效风险等级：${String(risk)}`);
+    if (typeof targetUrl !== "string") throw new Error("resolveUrl() 必须返回字符串");
 
     // 风险确认
-    await this.confirmRisk(parsedArgs);
+    if (!(await this.confirmRisk(parsedArgs, risk))) return;
 
     // 初始化 child logger，绑定本次执行上下文
     this.log = rootLogger.child({ site: this.site, routine: this.name });
@@ -83,29 +90,31 @@ export abstract class Routine {
     let pageId: number | undefined;
 
     try {
-      // 1. 检查 Bridge 连通性，未启动时自动执行 setup.sh
-      this.log.debug({}, "check →");
-      try {
-        await checkBridge();
-      } catch {
-        process.stderr.write("Bridge 未启动，正在执行 scripts/setup.sh...\n");
-        spawnSync("bash", [SETUP_SH], { stdio: "inherit" });
-        await checkBridge();
-      }
-      this.log.debug({ durationMs: Date.now() - t0 }, "check ✓");
+      let page: Page | null = null;
+      if (this.requiresBrowser) {
+        this.log.debug({}, "check →");
+        await ensureBridgeReady({ autoStart: true, requireExtension: true, extensionWaitMs: 45_000 });
+        this.log.debug({ durationMs: Date.now() - t0 }, "check ✓");
 
-      // 2. 打开标签页并等待加载
-      this.log.debug({ url: this.url }, "nav →");
-      const tNav = Date.now();
-      pageId = await openTab(this.url);
-      const page = new BridgePage(pageId, this.log);
-      await page.waitForLoad();
-      this.log.debug({ url: this.url, durationMs: Date.now() - tNav }, "nav ✓");
+        this.log.debug({ url: targetUrl, ready: this.navReady }, "nav →");
+        const tNav = Date.now();
+        pageId = await openTab();
+        page = new BridgePage(pageId, this.log);
+        try {
+          if (targetUrl) await page.goto(targetUrl, { waitUntil: "none", timeoutMs: this.navTimeoutMs });
+          if (this.navReady === "url") await page.waitForUrl(this.navTimeoutMs);
+          else await page.waitForLoad(this.navTimeoutMs);
+        } catch (error) {
+          if (!this.navOptional) throw error;
+          this.log.warn({ err: error, url: targetUrl }, "nav optional");
+        }
+        this.log.debug({ url: targetUrl, durationMs: Date.now() - tNav }, "nav ✓");
+      }
 
       // 3. 执行业务逻辑
       this.log.debug({ description: this.description }, "run →");
       const tRun = Date.now();
-      const rows = await this.run(page, parsedArgs);
+      const rows = await this.run(page as Page, parsedArgs);
       this.log.debug({ durationMs: Date.now() - tRun }, "run ✓");
 
       this.log.info(
@@ -119,7 +128,7 @@ export abstract class Routine {
     } finally {
       // 4. 关闭标签页（仅在 tab 已打开时）
       if (pageId !== undefined) {
-        this.log.debug({ url: this.url }, "tab ×");
+        this.log.debug({ url: targetUrl }, "tab ×");
         await closeTab(pageId);
       }
     }
@@ -141,8 +150,8 @@ export abstract class Routine {
   //     requestId: this.genReqId(), // 可选
   //   });
 
-  protected async pageFetch<T>(
-    page: Page,
+  async pageFetch<T>(
+    page: Page | null,
     options: {
       url: string;
       method?: string;
@@ -154,6 +163,17 @@ export abstract class Routine {
     const { url, method = "GET", headers, body, requestId } = options;
     const t0 = Date.now();
     const meta = { url, method, headers, body, requestId };
+
+    if (!page) {
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+        signal: AbortSignal.timeout(25_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json() as T;
+    }
 
     // 拼装在浏览器上下文执行的 fetch 脚本
     // 加 AbortController 超时（25s），防止页面导航中途脚本被挂住，导致 CDP awaitPromise 永久 pending
@@ -190,40 +210,59 @@ export abstract class Routine {
 
   // ─── 风险确认 ────────────────────────────────────────────────────
 
-  private async confirmRisk(args: Args): Promise<void> {
-    if (this.risk === "readonly" || this.risk === "low") return;
+  private async confirmRisk(args: Args, risk: Risk): Promise<boolean> {
+    if (risk === "readonly" || risk === "low") return true;
 
     const detail = this.describeAction(args);
 
-    if (this.risk === "medium") {
+    if (risk === "medium") {
       console.log(`\n⚠️  即将执行：${this.description}`);
       if (detail) console.log(`   ${detail}`);
       console.log("   风险等级：medium — 此操作有副作用\n");
-      const confirmed = prompt("确认执行？(y/N) ");
-      if (confirmed?.toLowerCase() !== "y") {
+      const confirmed = prompt("确认执行？(Y/n) ");
+      if (confirmed === null || !["", "y"].includes(confirmed.toLowerCase())) {
         console.log("已取消");
-        process.exit(0);
+        return false;
       }
     }
 
-    if (this.risk === "high") {
+    if (risk === "high") {
       console.log(`\n🚨 高风险操作：${this.description}`);
       if (detail) console.log(`   ${detail}`);
       console.log("   风险等级：high — 此操作不可逆\n");
       const confirmed = prompt("请输入 yes 确认执行：");
       if (confirmed !== "yes") {
         console.log("已取消");
-        process.exit(0);
+        return false;
       }
     }
+    return true;
   }
 
   /**
    * 子类可覆盖，返回操作详情描述（用于风险确认提示）。
    * 例如：\"将设置切换为 enabled（settingId: 999999）\"
    */
-  protected describeAction(_args: Args): string {
+  describeAction(_args: Args): string {
     return "";
+  }
+
+  resolveRisk(_args: Args): Risk | Promise<Risk> {
+    return this.risk;
+  }
+
+  resolveUrl(_args: Args): string | Promise<string> {
+    return this.url;
+  }
+
+  sdk(page: Page | null): RoutineSdk {
+    return {
+      pageFetch: <T>(options: Parameters<RoutineSdk["pageFetch"]>[0]) => this.pageFetch<T>(page, options),
+      getCookie: async (domain: string, name: string) => {
+        if (!page) throw new Error("requiresBrowser=false 的 Routine 不能读取浏览器 Cookie");
+        return getCookie(domain, name);
+      },
+    };
   }
 
   // ─── 帮助文本 ────────────────────────────────────────────────────
@@ -245,7 +284,7 @@ export abstract class Routine {
       for (const def of this.args) {
         const meta = [
           def.required ? "必填" : "",
-          def.default !== undefined ? `默认：${def.default}` : "",
+          def.default !== undefined ? `默认：${typeof def.default === "function" ? "<运行时>" : def.default}` : "",
         ]
           .filter(Boolean)
           .join("，");
@@ -255,9 +294,10 @@ export abstract class Routine {
       }
     }
 
-    console.log(
-      `  --${"format".padEnd(16)} 输出格式：table | json（默认：table）`,
-    );
+    console.log([
+      `  --${"format".padEnd(16)} 输出格式：auto | table | list | json（默认：auto）`,
+      `  --${"json".padEnd(16)} JSON 输出快捷方式`,
+    ].join("\n"));
     console.log(`  --${"help".padEnd(16)} 显示此帮助`);
   }
 

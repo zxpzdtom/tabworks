@@ -8,85 +8,31 @@
 
 import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { ensureBridgeReady } from "./bridge";
+import { listResolvedRoutines, loadResolvedRoutine } from "./discovery";
 import { exploreUrl, renderExploreResult } from "./explore";
 import { recordUrl, renderRecordResult } from "./record";
+import { bridgeHost, ensureTabworksHome, tabworksPaths } from "./paths";
 import type { Routine } from "./routine";
 import { renderSynthesizeResult, synthesize } from "./synthesize";
-
-const SITES_DIR = join(import.meta.dir, "..", "sites");
-const DEFAULT_BRIDGE_PORT = process.env.TABWORKS_PORT || "9527";
-const BRIDGE_HOST =
-  process.env.TABWORKS_BRIDGE_HOST ??
-  `http://127.0.0.1:${DEFAULT_BRIDGE_PORT}`;
 
 export async function loadRoutine(
   site: string,
   name: string,
 ): Promise<Routine> {
-  const filePath = join(SITES_DIR, site, `${name}.ts`);
-  let mod: { default?: new () => Routine };
-  try {
-    mod = await import(filePath);
-  } catch (e: unknown) {
-    throw new Error(
-      `找不到 ${site}/${name}：${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  if (!mod.default) throw new Error(`${site}/${name}.ts 没有 default export`);
-  const routine = new mod.default();
-  if (
-    typeof routine.site !== "string" ||
-    routine.site.length === 0 ||
-    typeof routine.name !== "string" ||
-    routine.name.length === 0 ||
-    typeof routine.description !== "string" ||
-    routine.description.length === 0 ||
-    typeof routine.url !== "string" ||
-    routine.url.length === 0
-  ) {
-    throw new Error(`${site}/${name}.ts 缺少必要的 routine 元数据`);
-  }
-  return routine;
+  return loadResolvedRoutine(site, name);
 }
 
 export async function listRoutines(): Promise<Routine[]> {
-  const routines: Routine[] = [];
-  let siteDirs: string[];
-  try {
-    siteDirs = await readdir(SITES_DIR);
-  } catch {
-    return [];
-  }
-
-  for (const site of siteDirs.sort()) {
-    if (site.startsWith("_")) continue;
-    let files: string[];
-    try {
-      files = await readdir(join(SITES_DIR, site));
-    } catch {
-      continue;
-    }
-    for (const file of files.sort()) {
-      if (
-        !file.endsWith(".ts") ||
-        file.startsWith("_") ||
-        file.endsWith(".test.ts") ||
-        file.endsWith(".integration.test.ts")
-      ) {
-        continue;
-      }
-      try {
-        routines.push(await loadRoutine(site, file.replace(/\.ts$/, "")));
-      } catch {
-        /* 跳过加载失败的 routine */
-      }
-    }
-  }
-
-  return routines;
+  return listResolvedRoutines();
 }
 
-export function formatRoutineList(routines: Routine[]): string {
+export function formatRoutineList(routines: Routine[], json = false): string {
+  if (json) return JSON.stringify(routines.map((routine) => ({
+    site: routine.site, name: routine.name, description: routine.description, risk: routine.risk,
+    source: routine.source?.kind ?? "builtin", sourceLabel: routine.source?.label ?? "内置",
+    requiresBrowser: routine.requiresBrowser,
+  })), null, 2);
   if (!routines.length) {
     return "暂无可用 Routine";
   }
@@ -109,7 +55,7 @@ export function formatRoutineList(routines: Routine[]): string {
       lastSite = routine.site;
     }
     lines.push(
-      `  ${routine.site.padEnd(siteW)}  ${routine.name.padEnd(nameW)}  [${riskLabel[routine.risk] ?? routine.risk}]  ${routine.description}`,
+      `  ${routine.site.padEnd(siteW)}  ${routine.name.padEnd(nameW)}  [${riskLabel[routine.risk] ?? routine.risk}]  [${routine.source?.label ?? "内置"}]  ${routine.description}`,
     );
   }
 
@@ -149,13 +95,15 @@ export function parseFlags(argv: string[]): Record<string, string> {
 }
 
 async function callBridge<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BRIDGE_HOST}${path}`, {
+  await ensureBridgeReady({ autoStart: true, requireExtension: true, extensionWaitMs: 45_000 });
+  const res = await fetch(`${bridgeHost()}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
       "X-TabWorks-Bridge": "1",
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(Number(process.env.TABWORKS_BRIDGE_REQUEST_TIMEOUT_MS || 30_000)),
   });
   const json = (await res.json()) as { error?: string };
   if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
@@ -308,7 +256,8 @@ export async function executeClean(argv: string[]): Promise<string> {
     throw new Error("--days 必须为非负整数");
   }
 
-  const exploreDir = join(import.meta.dir, "..", "..", ".bridge", "explore");
+  await ensureTabworksHome();
+  const exploreDir = tabworksPaths().exploreDir;
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const lines: string[] = [];
 
@@ -316,7 +265,7 @@ export async function executeClean(argv: string[]): Promise<string> {
   try {
     siteDirs = await readdir(exploreDir);
   } catch {
-    return "没有找到 explore 产物目录（.bridge/explore/），无需清理。";
+    return `没有找到 explore 产物目录（${exploreDir}），无需清理。`;
   }
 
   let removed = 0;
@@ -337,12 +286,12 @@ export async function executeClean(argv: string[]): Promise<string> {
     const mtime = dirStat.mtimeMs;
     if (days === 0 || mtime < cutoff) {
       await rm(siteDir, { recursive: true, force: true });
-      lines.push(`  已删除：.bridge/explore/${site}/`);
+      lines.push(`  已删除：${join(exploreDir, site)}/`);
       removed++;
     } else {
       const daysOld = Math.floor((Date.now() - mtime) / (24 * 60 * 60 * 1000));
       lines.push(
-        `  保留  ：.bridge/explore/${site}/（${daysOld} 天前，未超过 ${days} 天）`,
+        `  保留  ：${join(exploreDir, site)}/（${daysOld} 天前，未超过 ${days} 天）`,
       );
       skipped++;
     }

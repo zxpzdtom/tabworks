@@ -49,8 +49,12 @@ This unpacked extension step is only for source development. End users should in
 tw serve
 tw daemon start
 tw daemon status
+tw doctor
 tw list
+tw example                 # list one site's routines
 tw example read-title
+tw plugin list
+tw extension status
 tw record https://example.com
 tw explore --url https://example.com --site example --name read-page
 ```
@@ -66,6 +70,62 @@ Or run directly:
 ```bash
 bun cli/main.ts serve
 ```
+
+## User data and configuration
+
+TabWorks keeps all mutable state outside the checkout in `~/.tabworks/`:
+
+```text
+~/.tabworks/
+  config.toml
+  sites/                    user routines and local manifests
+  plugins/                  managed npm plugins
+  state/daemon.json
+  logs/daemon.log
+  logs/YYYY-MM-DD.jsonl
+  logs/screenshots/
+  explore/  record/  ui-record/
+```
+
+Override locations with `TABWORKS_HOME`, `TABWORKS_CONFIG_FILE`,
+`TABWORKS_SITES_DIR`, and `TABWORKS_PLUGINS_DIR`. Bridge clients also honor
+`TABWORKS_PORT`, `TABWORKS_BRIDGE_HOST`, and
+`TABWORKS_BRIDGE_REQUEST_TIMEOUT_MS`. The bridge server itself always binds to
+`127.0.0.1`.
+
+`config.toml` applies declared Routine arguments in this order: primitive
+top-level values, `[site]`, `["site/routine"]`, then CLI flags. Values not
+declared by the target Routine are ignored.
+
+## Routines and plugins
+
+Routine discovery priority is user (`~/.tabworks/sites`) > managed npm plugin
+> built-in (`bridge/sites`). `.ts`, `.js`, and `.mjs` files are supported;
+hidden/test files and names beginning with `_` are ignored. A Routine can be a
+`Routine` subclass or a default-exported object.
+
+Local site manifests are named `tabworks.json` and contain:
+
+```json
+{"site":"demo","title":"Demo","description":"Example","version":"0.1.0","pluginApiVersion":1,"routines":["hello"]}
+```
+
+npm packages declare `tabworks.sitesDir` and `tabworks.pluginApiVersion` in
+their `package.json`. Manage and validate them with:
+
+```bash
+tw plugin init demo
+tw plugin list --json
+tw plugin check demo
+tw plugin install <package>
+tw plugin update-check [package]
+tw plugin update [package]
+tw plugin uninstall <package>
+```
+
+Routine result output supports `--format auto|table|list|json`; `--json` is a
+shortcut. Auto mode chooses a table only when the terminal and fields fit.
+URLs are never shortened.
 
 ## Build
 
@@ -110,7 +170,7 @@ The bridge listens only on `127.0.0.1`. HTTP mutation routes require the `X-TabW
 
 ## Logs
 
-Execution logs are written to `logs/YYYY-MM-DD.jsonl` and shown in the viewer. The extension popup also links to this viewer when the local service is online.
+Execution logs are written to `~/.tabworks/logs/YYYY-MM-DD.jsonl` and shown in the viewer. The extension popup also links to this viewer when the local service is online.
 
 ## Project Structure
 

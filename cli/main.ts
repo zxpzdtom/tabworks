@@ -20,45 +20,21 @@ import {
   stopBridgeDaemon,
   stopBridgeService,
 } from "../bridge/lib/service";
+import { doctorReport, extensionStatusReport, formatDoctor } from "../bridge/lib/doctor";
+import {
+  checkPlugins,
+  initLocalPlugin,
+  installPlugin,
+  listPluginDescriptors,
+  uninstallPlugin,
+  updateCheckPlugin,
+  updatePlugin,
+} from "../bridge/lib/plugins";
 
-function renderRoutineHelp(routine: Awaited<ReturnType<typeof loadRoutine>>) {
-  const riskLabel = {
-    readonly: "只读",
-    low: "低风险",
-    medium: "中风险",
-    high: "高风险",
-  }[routine.risk];
-
-  const lines = [
-    "",
-    `站点：${routine.site}`,
-    `描述：${routine.description}`,
-    `风险：${riskLabel}`,
-    `入口：${routine.url}`,
-  ];
-
-  if (routine.args.length > 0) {
-    lines.push("", "Routine 选项：");
-    for (const arg of routine.args) {
-      const parts = [
-        arg.help ?? "",
-        arg.required ? "必填" : "",
-        arg.default !== undefined ? `默认：${arg.default}` : "",
-      ].filter(Boolean);
-      lines.push(
-        `  --${arg.name.padEnd(16)} ${parts.join("，")}${parts.length ? "" : "无说明"}`,
-      );
-    }
-  }
-
-  lines.push(
-    "",
-    `示例：tw ${routine.site} ${routine.name}${
-      routine.args[0] ? ` --${routine.args[0].name} <value>` : ""
-    }`,
-  );
-  return lines.join("\n");
-}
+const BUILTIN_COMMANDS = new Set([
+  "list", "serve", "start", "bridge", "daemon", "run", "explore", "record",
+  "ui-record", "synthesize", "clean", "plugin", "doctor", "extension", "help",
+]);
 
 function addDynamicHelp(program: Command, routineSummary: string): void {
   program.addHelpText(
@@ -72,10 +48,14 @@ async function maybeRunRoutineFastPath(argv: string[]): Promise<boolean> {
   let name = "";
   let rest: string[] = [];
 
-  if (argv[0] === "run") {
-    if (argv.length < 3) return false;
-    [site, name, ...rest] = argv.slice(1);
-  } else {
+  if (!argv[0] || BUILTIN_COMMANDS.has(argv[0]) || argv[0].startsWith("-")) return false;
+  {
+    if (argv.length === 1 || argv.slice(1).every((item) => item === "--json")) {
+      const routines = (await listRoutines()).filter((item) => item.site === argv[0]);
+      if (!routines.length) return false;
+      console.log(formatRoutineList(routines, argv.includes("--json")));
+      return true;
+    }
     if (argv.length < 2) return false;
     [site, name, ...rest] = argv;
   }
@@ -87,7 +67,6 @@ async function maybeRunRoutineFastPath(argv: string[]): Promise<boolean> {
   if (!routine) return false;
 
   if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(renderRoutineHelp(routine));
     await executeRoutine(site, name, ["--help"]);
     return true;
   }
@@ -100,7 +79,8 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (await maybeRunRoutineFastPath(argv)) return;
 
-  const routineSummary = formatRoutineList(await listRoutines());
+  let routineSummary = "运行 tw list 查看全部能力";
+  try { routineSummary = formatRoutineList(await listRoutines()); } catch { /* 诊断命令仍应可运行 */ }
   const program = new Command();
 
   program
@@ -114,9 +94,56 @@ async function main(): Promise<void> {
   program
     .command("list")
     .description("列出所有可用 Routine")
-    .action(async () => {
-      console.log(formatRoutineList(await listRoutines()));
+    .option("--site <site>", "仅列出指定站点")
+    .option("--json", "JSON 输出")
+    .action(async (opts: { site?: string; json?: boolean }) => {
+      const routines = (await listRoutines()).filter((item) => !opts.site || item.site === opts.site);
+      console.log(formatRoutineList(routines, opts.json === true));
     });
+
+  program
+    .command("doctor")
+    .description("检查运行时、用户目录、Routine、daemon、Bridge、扩展和 Viewer")
+    .option("--json", "JSON 输出")
+    .action(async (opts: { json?: boolean }) => {
+      const report = await doctorReport();
+      console.log(opts.json ? JSON.stringify(report, null, 2) : formatDoctor(report));
+    });
+
+  const extension = program.command("extension").description("Chrome 扩展状态");
+  extension.command("status").option("--json", "JSON 输出").action(async (opts: { json?: boolean }) => {
+    const report = await extensionStatusReport();
+    if (opts.json) console.log(JSON.stringify(report, null, 2));
+    else {
+      const bridge = report.bridge as Record<string, unknown>;
+      console.log(`Bridge: ${bridge.running ? "运行中" : "未运行"} (${bridge.host})`);
+      console.log(`扩展: ${bridge.extensionConnected ? `已连接 v${bridge.extensionVersion ?? "unknown"}` : bridge.socketConnected ? "连接无健康响应" : "未连接"}`);
+      console.log(`最后响应: ${bridge.lastExtensionResponseAt ?? "无"}`);
+    }
+  });
+
+  const plugin = program.command("plugin").description("本地站点与 npm 插件管理");
+  plugin.command("init").argument("<site>").option("--title <title>").option("--description <text>").option("--version <version>").option("--json", "JSON 输出")
+    .action(async (site: string, opts: { title?: string; description?: string; version?: string; json?: boolean }) => {
+      const result = await initLocalPlugin(site, opts);
+      console.log(opts.json ? JSON.stringify(result, null, 2) : `已创建 ${site}\nmanifest: ${result.manifestFile}\nroutine: ${result.routineFile}`);
+    });
+  plugin.command("list").option("--json", "JSON 输出").action(async (opts: { json?: boolean }) => {
+    const result = await listPluginDescriptors();
+    console.log(opts.json ? JSON.stringify(result, null, 2) : result.length ? result.map((item) => `${item.type}: ${item.site ?? item.packageName} (${item.path ?? item.sitesDir})`).join("\n") : "暂无插件");
+  });
+  plugin.command("check").argument("[target]").option("--json", "JSON 输出").action(async (target: string | undefined, opts: { json?: boolean }) => {
+    const result = await checkPlugins(target);
+    console.log(opts.json ? JSON.stringify(result, null, 2) : [result.ok ? "插件检查通过" : "插件检查失败", ...result.errors.map((error) => `- ${error}`)].join("\n"));
+    if (!result.ok) process.exitCode = 1;
+  });
+  plugin.command("install").argument("<specifier>").action(async (specifier: string) => console.log(await installPlugin(specifier)));
+  plugin.command("uninstall").argument("<package>").action(async (name: string) => console.log(await uninstallPlugin(name)));
+  plugin.command("update-check").argument("[package]").option("--json", "JSON 输出").action(async (name: string | undefined, opts: { json?: boolean }) => {
+    const result = await updateCheckPlugin(name);
+    console.log(opts.json ? JSON.stringify(result, null, 2) : result.output);
+  });
+  plugin.command("update").argument("[package]").action(async (name?: string) => console.log(await updatePlugin(name)));
 
   program
     .command("serve")

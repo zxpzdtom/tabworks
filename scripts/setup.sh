@@ -6,9 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BRIDGE_DIR="$PROJECT_DIR/bridge"
-EXTENSION_DIR="$PROJECT_DIR/extension"
+EXTENSION_DIR="$PROJECT_DIR/extension/dist"
 CLI_MAIN="$PROJECT_DIR/cli/main.ts"
-LOG_FILE="/tmp/tabworks.log"
 
 PORT="${TABWORKS_PORT:-9527}"
 HOST="127.0.0.1"
@@ -31,7 +30,7 @@ bridge_status() {
 
 # 等待扩展连接，超时返回非零
 wait_for_extension() {
-  local max="${1:-30}"
+  local max="${1:-45}"
   local i=0
   while [ "$i" -lt "$max" ]; do
     [ "$(bridge_status)" = "ready" ] && return 0
@@ -120,11 +119,11 @@ check_bridge() {
   fi
 
   if [ "$status" = "running" ]; then
-    echo "bridge: running，等待扩展连接（最多 30s）..."
+    echo "bridge: running，等待扩展连接（最多 45s）..."
   else
     echo "bridge: starting..."
-    (cd "$PROJECT_DIR" && bun "$CLI_MAIN" serve) >"$LOG_FILE" 2>&1 &
-    echo "bridge: started (pid $!)，等待扩展连接（最多 30s）..."
+    (cd "$PROJECT_DIR" && bun "$CLI_MAIN" daemon start)
+    echo "bridge: daemon 已启动，等待扩展连接（最多 45s）..."
     # 先等进程启动
     local i=0
     while [ "$i" -lt 5 ]; do
@@ -132,12 +131,12 @@ check_bridge() {
       [ -n "$(bridge_status)" ] && break
     done
     if [ -z "$(bridge_status)" ]; then
-      echo "bridge: 启动失败，查看日志: $LOG_FILE"
+      echo "bridge: 启动失败，请运行 tw doctor"
       exit 1
     fi
   fi
 
-  if wait_for_extension 30; then
+  if wait_for_extension 45; then
     echo "bridge: ready (${BRIDGE_URL}，扩展已连接)"
   else
     print_extension_guide

@@ -16,10 +16,11 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import pino from "pino";
+import { tabworksPaths } from "./paths";
 
 // ─── 日志目录（仓库根目录下的 logs/）───────────────────────────────
 
-const LOGS_DIR = join(import.meta.dirname, "..", "..", "logs");
+const LOGS_DIR = tabworksPaths().logsDir;
 
 try {
   mkdirSync(LOGS_DIR, { recursive: true });

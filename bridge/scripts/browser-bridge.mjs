@@ -21,8 +21,10 @@
 import http from "node:http";
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
-import { extname, join, relative } from "node:path";
+import { homedir } from "node:os";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { WebSocketServer } from "ws";
+import { isApplicationSocketHealthy, rejectPendingForSocket, takePendingForSocket } from "./socket-state.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = parseInt(process.env.TABWORKS_PORT || "9527", 10);
@@ -32,9 +34,16 @@ const IDLE_TIMEOUT = Math.max(
 );
 const STARTED_AT = Date.now();
 const PROJECT_DIR = join(import.meta.dirname, "..", "..");
-const LOGS_DIR = join(PROJECT_DIR, "logs");
+function resolveDataPath(value, fallback) {
+  if (!value) return fallback;
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return isAbsolute(value) ? value : resolve(value);
+}
+const TABWORKS_HOME = resolveDataPath(process.env.TABWORKS_HOME, join(homedir(), ".tabworks"));
+const LOGS_DIR = join(TABWORKS_HOME, "logs");
 const SCREENSHOTS_DIR = join(LOGS_DIR, "screenshots");
-const UI_RECORDINGS_DIR = join(PROJECT_DIR, ".bridge", "ui-record");
+const UI_RECORDINGS_DIR = join(TABWORKS_HOME, "ui-record");
 const VIEWER_DIST_DIR = join(PROJECT_DIR, "viewer", "dist");
 const INDEX_HTML = join(VIEWER_DIST_DIR, "index.html");
 const BRIDGE_ROUTES = new Set([
@@ -84,14 +93,26 @@ const STATIC_CONTENT_TYPES = {
 
 let extensionWs = null; // Chrome 扩展的 WebSocket 连接
 let extensionVersion = null; // 扩展上报的版本号
-const pending = new Map(); // 等待扩展回复的请求 Map<id, {resolve, reject, timer}>
+let lastExtensionResponseAt = null;
+const EXTENSION_HEALTH_INTERVAL_MS = 20_000;
+const EXTENSION_STALE_AFTER_MS = 45_000;
+const pending = new Map(); // Map<id, {resolve, reject, timer, socket}>
 let nextId = 0;
 const logBuffer = []; // 扩展转发的 console 日志（最多 200 条）
 const MAX_LOG_BUFFER = 200;
 const uiRecordings = new Map();
 
 function isExtensionConnected() {
-  return extensionWs !== null && extensionWs.readyState === 1; // WebSocket.OPEN = 1
+  return isApplicationSocketHealthy(
+    extensionWs !== null && extensionWs.readyState === 1,
+    lastExtensionResponseAt,
+    Date.now(),
+    EXTENSION_STALE_AFTER_MS,
+  );
+}
+
+function isExtensionSocketConnected() {
+  return extensionWs !== null && extensionWs.readyState === 1;
 }
 
 function extensionCommandTimeout(command) {
@@ -106,8 +127,12 @@ function extensionCommandTimeout(command) {
 // ─── 向扩展发送命令 ──────────────────────────────────────────────────
 
 function sendToExtension(command) {
+  return sendToSocket(extensionWs, command);
+}
+
+function sendToSocket(socket, command) {
   return new Promise((resolve, reject) => {
-    if (!isExtensionConnected()) {
+    if (!socket || socket.readyState !== 1) {
       return reject(
         new Error(
           "扩展未连接。请安装 tabworks Chrome 扩展并确保 bridge 正在运行。\n" +
@@ -123,8 +148,8 @@ function sendToExtension(command) {
       reject(new Error(`命令超时（${timeoutMs}ms）：${command.action}`));
     }, timeoutMs);
 
-    pending.set(id, { resolve, reject, timer });
-    extensionWs.send(JSON.stringify({ ...command, id }));
+    pending.set(id, { resolve, reject, timer, socket });
+    socket.send(JSON.stringify({ ...command, id }));
   });
 }
 
@@ -719,7 +744,10 @@ const httpServer = http.createServer(async (req, res) => {
           startedAt: new Date(STARTED_AT).toISOString(),
           uptimeMs: Date.now() - STARTED_AT,
           extensionConnected: isExtensionConnected(),
+          socketConnected: isExtensionSocketConnected(),
           extensionVersion,
+          lastExtensionResponseAt: lastExtensionResponseAt ? new Date(lastExtensionResponseAt).toISOString() : null,
+          lastExtensionResponseAgeMs: lastExtensionResponseAt ? Date.now() - lastExtensionResponseAt : null,
           pendingCommands: pending.size,
         },
         VIEWER_CORS_HEADERS,
@@ -1223,7 +1251,7 @@ const httpServer = http.createServer(async (req, res) => {
       }
     }
 
-    // POST /recording/stop — 停止录制并写入 .bridge/ui-record/<sessionId>/session.json
+    // POST /recording/stop — 停止录制并写入 ~/.tabworks/ui-record/<sessionId>/session.json
     if (req.method === "POST" && url.pathname === "/recording/stop") {
       const body = await parseJson(req);
       requireField(body.sessionId, "sessionId");
@@ -1307,27 +1335,39 @@ const wss = new WebSocketServer({
 
 wss.on("connection", (ws) => {
   console.error("[tabworks] 扩展已连接");
+  const previousWs = extensionWs;
   extensionWs = ws;
   extensionVersion = null;
+  lastExtensionResponseAt = null;
+  const connectedAt = Date.now();
+  if (previousWs && previousWs !== ws && previousWs.readyState === 1) {
+    previousWs.close(4000, "replaced by newer extension connection");
+  }
 
-  // 心跳：定期发送 ping 保活，但不再因空闲主动断开。
-  let lastPongAt = Date.now();
+  // 应用层 health 由扩展 JS 回包；只有持续无回包才关闭僵死 socket。
   const heartbeat = setInterval(() => {
     if (!ws || ws.readyState !== 1) {
       clearInterval(heartbeat);
       return;
     }
-    if (Date.now() - lastPongAt > 5 * 60 * 1000) {
-      console.error("[tabworks] 扩展心跳长时间未响应，保持等待重连");
+    if (extensionWs !== ws) {
+      clearInterval(heartbeat);
+      return;
     }
-    ws.ping();
-  }, 30000);
-
-  ws.on("pong", () => {
-    lastPongAt = Date.now();
-  });
+    const responseBaseline = lastExtensionResponseAt ?? connectedAt;
+    if (Date.now() - responseBaseline > EXTENSION_STALE_AFTER_MS) {
+      console.error("[tabworks] 扩展应用层心跳超过 45 秒未响应，关闭僵死连接");
+      ws.close(4001, "application heartbeat timeout");
+      return;
+    }
+    sendToSocket(ws, { action: "health", commandTimeoutMs: 10_000 }).catch((err) => {
+      console.error("[tabworks] 扩展 health 命令未响应:", err.message);
+    });
+  }, EXTENSION_HEALTH_INTERVAL_MS);
 
   ws.on("message", (data) => {
+    if (extensionWs !== ws) return;
+    lastExtensionResponseAt = Date.now();
     let msg;
     try {
       msg = JSON.parse(data.toString());
@@ -1362,9 +1402,10 @@ wss.on("connection", (ws) => {
 
     // 命令结果：从 pending 中找到对应的 Promise 并 resolve
     if (msg.id && pending.has(msg.id)) {
-      const { resolve, reject, timer } = pending.get(msg.id);
+      const item = takePendingForSocket(pending, msg.id, ws);
+      if (!item) return;
+      const { resolve, reject, timer } = item;
       clearTimeout(timer);
-      pending.delete(msg.id);
       if (msg.ok) {
         resolve(msg.data);
       } else {
@@ -1378,14 +1419,11 @@ wss.on("connection", (ws) => {
     if (extensionWs === ws) {
       extensionWs = null;
       extensionVersion = null;
+      lastExtensionResponseAt = null;
       console.error("[tabworks] 扩展已断开");
     }
-    // 拒绝所有等待中的请求
-    for (const [id, { reject, timer }] of pending.entries()) {
-      clearTimeout(timer);
-      pending.delete(id);
-      reject(new Error("扩展连接已断开"));
-    }
+    // 只拒绝属于当前旧连接的请求，不能误伤替换后的新连接。
+    rejectPendingForSocket(pending, ws, new Error("扩展连接已断开"));
   });
 
   ws.on("error", (err) => {
